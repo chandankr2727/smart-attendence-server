@@ -193,4 +193,85 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
     }
 };
 
+// Method to determine current time slot based on center's time configuration
+studentSchema.methods.getCurrentTimeSlot = function (center, checkTime = new Date()) {
+    try {
+        if (!center || !center.timeSlots) {
+            console.log('⚠️ No center or time slots provided');
+            return { slot: null, isWithinHours: false };
+        }
+
+        const timeString = checkTime.toTimeString().slice(0, 5); // HH:MM format
+        console.log(`🕐 Checking time ${timeString} against center ${center.name} time slots`);
+
+        const timeSlots = center.timeSlots;
+
+        // Check each time slot
+        for (const [slotName, times] of Object.entries(timeSlots)) {
+            if (times && times.start && times.end) {
+                console.log(`⏰ Checking ${slotName} slot: ${times.start} - ${times.end}`);
+
+                if (timeString >= times.start && timeString <= times.end) {
+                    console.log(`✅ Time ${timeString} is within ${slotName} slot`);
+                    return {
+                        slot: slotName,
+                        isWithinHours: true,
+                        startTime: times.start,
+                        endTime: times.end
+                    };
+                }
+            }
+        }
+
+        console.log(`❌ Time ${timeString} is outside all operating hours`);
+        return { slot: null, isWithinHours: false };
+
+    } catch (error) {
+        console.error('❌ Error determining current time slot:', error);
+        return { slot: null, isWithinHours: false };
+    }
+};
+
+// Method to check if attendance is late based on center's time slots and late threshold
+studentSchema.methods.isAttendanceLate = function (center, attendanceTime = new Date(), lateThreshold = 15) {
+    try {
+        if (!center || !center.timeSlots) {
+            console.log('⚠️ No center or time slots for late check');
+            return false;
+        }
+
+        const timeSlotInfo = this.getCurrentTimeSlot(center, attendanceTime);
+
+        if (!timeSlotInfo.isWithinHours) {
+            console.log('📅 Attendance outside operating hours - marking as late');
+            return true;
+        }
+
+        // Calculate if late based on slot start time + threshold
+        const attendanceTimeString = attendanceTime.toTimeString().slice(0, 5);
+        const slotStartTime = timeSlotInfo.startTime;
+
+        // Convert times to minutes for comparison
+        const attendanceMinutes = this._timeToMinutes(attendanceTimeString);
+        const slotStartMinutes = this._timeToMinutes(slotStartTime);
+        const thresholdMinutes = slotStartMinutes + lateThreshold;
+
+        const isLate = attendanceMinutes > thresholdMinutes;
+
+        console.log(`⏰ Late check: attendance ${attendanceTimeString} vs slot start ${slotStartTime} + ${lateThreshold}min threshold = ${isLate ? 'LATE' : 'ON TIME'}`);
+
+        return isLate;
+
+    } catch (error) {
+        console.error('❌ Error checking if attendance is late:', error);
+        return false;
+    }
+};
+
+// Helper method to convert HH:MM time to minutes
+studentSchema.methods._timeToMinutes = function (timeString) {
+    const [hours, minutes] = timeString.split(':').map(Number);
+    return hours * 60 + minutes;
+};
+
 export default mongoose.model('Student', studentSchema); 

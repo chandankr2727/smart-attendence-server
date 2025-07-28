@@ -12,21 +12,6 @@ const settingsSchema = new mongoose.Schema({
             required: false,
             default: ''
         },
-        webhookUrl: {
-            type: String,
-            required: false,
-            default: ''
-        },
-        businessId: {
-            type: String,
-            required: false,
-            default: ''
-        },
-        phoneNumberId: {
-            type: String,
-            required: false,
-            default: ''
-        },
         isActive: {
             type: Boolean,
             default: false
@@ -63,9 +48,7 @@ const settingsSchema = new mongoose.Schema({
             phone: String,
             email: String,
             manager: String
-        }
-    }],
-    attendanceSettings: {
+        },
         timeSlots: {
             morning: {
                 start: {
@@ -86,8 +69,20 @@ const settingsSchema = new mongoose.Schema({
                     type: String,
                     default: '18:00'
                 }
+            },
+            evening: {
+                start: {
+                    type: String,
+                    default: '19:00'
+                },
+                end: {
+                    type: String,
+                    default: '22:00'
+                }
             }
-        },
+        }
+    }],
+    attendanceSettings: {
         lateThreshold: {
             type: Number,
             default: 15 // minutes
@@ -119,32 +114,6 @@ const settingsSchema = new mongoose.Schema({
                 type: String,
                 default: '08:30'
             }
-        }
-    },
-    googleSheets: {
-        enabled: {
-            type: Boolean,
-            default: false
-        },
-        credentials: {
-            type: String, // JSON string of service account credentials
-            default: null
-        },
-        spreadsheetId: {
-            type: String,
-            default: null
-        },
-        worksheetName: {
-            type: String,
-            default: 'Students'
-        },
-        syncInterval: {
-            type: Number,
-            default: 3600000 // 1 hour in milliseconds
-        },
-        lastSync: {
-            type: Date,
-            default: null
         }
     },
     system: {

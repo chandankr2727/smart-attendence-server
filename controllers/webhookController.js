@@ -255,10 +255,50 @@ async function processLocationAttendance(student, processData) {
         const centerVerification = await findClosestValidCenter(location, student);
         const { isWithin: isWithinRadius, distance, center } = centerVerification;
 
+        // Get settings for late threshold
+        const settings = await Settings.getSettings();
+        const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+
+        // Determine time slot and status based on center
+        let session = 'unknown';
+        let timeSlot = { expected: { start: null, end: null } };
+        let status = 'pending_verification';
+
+        if (center && center.timeSlots) {
+            const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
+            session = timeSlotInfo.slot || 'unknown';
+
+            if (timeSlotInfo.isWithinHours) {
+                timeSlot = {
+                    expected: {
+                        start: timeSlotInfo.startTime,
+                        end: timeSlotInfo.endTime
+                    }
+                };
+
+                if (isWithinRadius) {
+                    const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
+                    status = isLate ? 'late' : 'present';
+                } else {
+                    status = 'pending_verification';
+                }
+            } else {
+                // Outside operating hours
+                status = 'late';
+                session = 'outside_hours';
+            }
+        } else if (isWithinRadius) {
+            // Fallback logic when center doesn't have time slots
+            status = 'present';
+        }
+
         // Create attendance record
         const attendanceData = {
             student: student._id,
             date: new Date(timestamp),
+            status: status,
+            session: session,
+            timeSlot: timeSlot,
             whatsappMessage: {
                 messageId,
                 from,
@@ -284,8 +324,8 @@ async function processLocationAttendance(student, processData) {
                 } : null
             },
             verification: {
-                isVerified: isWithinRadius,
-                verifiedAt: isWithinRadius ? new Date() : null
+                isVerified: isWithinRadius && status !== 'pending_verification',
+                verifiedAt: (isWithinRadius && status !== 'pending_verification') ? new Date() : null
             },
             metadata: {
                 webhookReceived: new Date(),
@@ -296,14 +336,22 @@ async function processLocationAttendance(student, processData) {
         const attendance = new Attendance(attendanceData);
         await attendance.save();
 
-        // Send confirmation message
-        const settings = await Settings.getSettings();
+        // Send confirmation message with time slot information
         let message;
 
         if (isWithinRadius) {
+            const timeInfo = timeSlot.expected.start ? ` during ${session} session (${timeSlot.expected.start}-${timeSlot.expected.end})` : '';
             message = settings.templates.confirmationMessage
                 .replace('{{date}}', new Date().toLocaleDateString('en-IN'))
-                .replace('{{time}}', new Date().toLocaleTimeString('en-IN'));
+                .replace('{{time}}', new Date().toLocaleTimeString('en-IN'))
+                .replace('{{centerName}}', center ? center.name : 'center')
+                .replace('{{studentName}}', student.name);
+
+            if (status === 'late') {
+                message += `\n⚠️ Note: You are marked as LATE${timeInfo}.`;
+            } else if (timeInfo) {
+                message += `\n✅ Attendance marked for ${session} session.`;
+            }
         } else {
             const centerName = center ? center.name : 'any center';
             message = `You are ${distance}m away from ${centerName}. ${settings.templates.rejectionMessage}`;
@@ -464,17 +512,65 @@ async function processImageAttendance(student, processData) {
                     } : null
                 };
 
-                // Update status if now within radius
-                if (isWithinRadius) {
-                    attendance.status = attendance.isLate() ? 'late' : 'present';
+                // Update status if now within radius using center-specific time checking
+                if (isWithinRadius && center) {
+                    const settings = await Settings.getSettings();
+                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+
+                    // Update time slot and session information
+                    const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
+                    attendance.session = timeSlotInfo.slot || 'unknown';
+                    attendance.timeSlot = {
+                        expected: {
+                            start: timeSlotInfo.startTime || null,
+                            end: timeSlotInfo.endTime || null
+                        }
+                    };
+
+                    if (timeSlotInfo.isWithinHours) {
+                        const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
+                        attendance.status = isLate ? 'late' : 'present';
+                    } else {
+                        attendance.status = 'late';
+                        attendance.session = 'outside_hours';
+                    }
+
                     attendance.verification.isVerified = true;
                     attendance.verification.verifiedAt = new Date();
                 }
             }
 
             // If location was already verified and now we have image, mark as present
-            if (attendance.location.isWithinRadius) {
-                attendance.status = attendance.isLate() ? 'late' : 'present';
+            if (attendance.location.isWithinRadius && attendance.location.verifiedCenter) {
+                const settings = await Settings.getSettings();
+                const center = settings.centers.find(c =>
+                    c._id.toString() === attendance.location.verifiedCenter.id.toString()
+                );
+
+                if (center) {
+                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+                    const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
+
+                    attendance.session = timeSlotInfo.slot || 'unknown';
+                    attendance.timeSlot = {
+                        expected: {
+                            start: timeSlotInfo.startTime || null,
+                            end: timeSlotInfo.endTime || null
+                        }
+                    };
+
+                    if (timeSlotInfo.isWithinHours) {
+                        const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
+                        attendance.status = isLate ? 'late' : 'present';
+                    } else {
+                        attendance.status = 'late';
+                        attendance.session = 'outside_hours';
+                    }
+                } else {
+                    // Fallback to old logic
+                    attendance.status = attendance.isLate() ? 'late' : 'present';
+                }
+
                 attendance.verification.isVerified = true;
                 attendance.verification.verifiedAt = new Date();
             }
@@ -482,17 +578,12 @@ async function processImageAttendance(student, processData) {
             await attendance.save();
         } else {
             // Create new attendance record with image only
-            const initialStatus = (imageMetadata && imageMetadata.hasGPS) ?
-                await (async () => {
-                    const imageLocation = imageMetadata.location;
-                    const centerVerification = await findClosestValidCenter(imageLocation, student);
-                    return centerVerification.isWithin ? 'present' : 'pending_verification';
-                })() : 'pending_verification';
-
-            attendance = new Attendance({
+            let initialData = {
                 student: student._id,
                 date: new Date(timestamp),
-                status: initialStatus,
+                status: 'pending_verification',
+                session: 'unknown',
+                timeSlot: { expected: { start: null, end: null } },
                 whatsappMessage: {
                     messageId,
                     from,
@@ -507,41 +598,6 @@ async function processImageAttendance(student, processData) {
                         filename: content.filename || null
                     }
                 },
-                location: await (async () => {
-                    // Use image GPS location if available
-                    if (imageMetadata && imageMetadata.hasGPS) {
-                        const imageLocation = imageMetadata.location;
-                        const centerVerification = await findClosestValidCenter(imageLocation, student);
-                        const { isWithin: isWithinRadius, distance, center } = centerVerification;
-
-                        return {
-                            coordinates: {
-                                latitude: imageLocation.latitude,
-                                longitude: imageLocation.longitude
-                            },
-                            accuracy: null,
-                            address: null,
-                            isWithinRadius,
-                            distanceFromCenter: distance,
-                            source: 'image_exif',
-                            verifiedCenter: center ? {
-                                id: center._id,
-                                name: center.name,
-                                address: center.address
-                            } : null
-                        };
-                    } else {
-                        return {
-                            coordinates: {
-                                latitude: 0, // Will be updated when location is received
-                                longitude: 0
-                            },
-                            isWithinRadius: false,
-                            distanceFromCenter: 999999,
-                            source: 'pending'
-                        };
-                    }
-                })(),
                 images: [{
                     url: imageUrl,
                     metadata: {
@@ -557,8 +613,66 @@ async function processImageAttendance(student, processData) {
                     webhookReceived: new Date(),
                     processed: new Date()
                 }
-            });
+            };
 
+            // Determine location and status based on GPS data
+            if (imageMetadata && imageMetadata.hasGPS) {
+                const imageLocation = imageMetadata.location;
+                const centerVerification = await findClosestValidCenter(imageLocation, student);
+                const { isWithin: isWithinRadius, distance, center } = centerVerification;
+
+                initialData.location = {
+                    coordinates: {
+                        latitude: imageLocation.latitude,
+                        longitude: imageLocation.longitude
+                    },
+                    accuracy: null,
+                    address: null,
+                    isWithinRadius,
+                    distanceFromCenter: distance,
+                    source: 'image_exif',
+                    verifiedCenter: center ? {
+                        id: center._id,
+                        name: center.name,
+                        address: center.address
+                    } : null
+                };
+
+                // If within radius and we have center info, determine proper status and time slot
+                if (isWithinRadius && center) {
+                    const settings = await Settings.getSettings();
+                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+
+                    const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
+                    initialData.session = timeSlotInfo.slot || 'unknown';
+                    initialData.timeSlot = {
+                        expected: {
+                            start: timeSlotInfo.startTime || null,
+                            end: timeSlotInfo.endTime || null
+                        }
+                    };
+
+                    if (timeSlotInfo.isWithinHours) {
+                        const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
+                        initialData.status = isLate ? 'late' : 'present';
+                    } else {
+                        initialData.status = 'late';
+                        initialData.session = 'outside_hours';
+                    }
+                }
+            } else {
+                initialData.location = {
+                    coordinates: {
+                        latitude: 0, // Will be updated when location is received
+                        longitude: 0
+                    },
+                    isWithinRadius: false,
+                    distanceFromCenter: 999999,
+                    source: 'pending'
+                };
+            }
+
+            attendance = new Attendance(initialData);
             await attendance.save();
         }
 

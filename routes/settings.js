@@ -6,7 +6,9 @@ import {
     addCenter,
     updateCenter,
     removeCenter,
-    getCenter
+    getCenter,
+    updateTemplates,
+    getTemplates
 } from '../controllers/settingsController.js';
 
 const router = express.Router();
@@ -32,5 +34,12 @@ router.put('/centers/:id', updateCenter);
 
 // DELETE /api/settings/centers/:id - Remove center
 router.delete('/centers/:id', removeCenter);
+
+// Template management routes
+// GET /api/settings/templates - Get message templates
+router.get('/templates', getTemplates);
+
+// PUT /api/settings/templates - Update message templates
+router.put('/templates', updateTemplates);
 
 export default router; 
