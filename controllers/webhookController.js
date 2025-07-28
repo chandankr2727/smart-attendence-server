@@ -283,21 +283,10 @@ async function processLocationAttendance(student, processData) {
                     address: center.address
                 } : null
             },
-            verification: await (async () => {
-                if (imageMetadata && imageMetadata.hasGPS) {
-                    const imageLocation = imageMetadata.location;
-                    const centerVerification = await findClosestValidCenter(imageLocation, student);
-                    const { isWithin: isWithinRadius } = centerVerification;
-                    return {
-                        isVerified: isWithinRadius,
-                        verifiedAt: isWithinRadius ? new Date() : null
-                    };
-                }
-                return {
-                    isVerified: false,
-                    verifiedAt: null
-                };
-            })(),
+            verification: {
+                isVerified: isWithinRadius,
+                verifiedAt: isWithinRadius ? new Date() : null
+            },
             metadata: {
                 webhookReceived: new Date(),
                 processed: new Date()

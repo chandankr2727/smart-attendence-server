@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import geolib from 'geolib';
 
 const studentSchema = new mongoose.Schema({
     name: {
@@ -89,83 +90,107 @@ studentSchema.virtual('displayName').get(function () {
 
 // Method to check if student is within any center radius
 studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, centers) {
-    const geolib = require('geolib');
+    try {
+        console.log('🚀 Starting isWithinAnyCenterRadius method');
 
-    // Ensure coordinates are numbers with proper precision
-    const userLatitude = parseFloat(parseFloat(userLat).toFixed(6));
-    const userLongitude = parseFloat(parseFloat(userLng).toFixed(6));
+        // Ensure coordinates are numbers with proper precision
+        const userLatitude = parseFloat(parseFloat(userLat).toFixed(6));
+        const userLongitude = parseFloat(parseFloat(userLng).toFixed(6));
 
-    console.log('🧮 Calculating distances for user location:', { userLat: userLatitude, userLng: userLongitude });
-    console.log('🧮 Original input:', { userLat, userLng });
-    console.log('🏢 Checking against', centers.length, 'centers');
+        console.log('🧮 Calculating distances for user location:', { userLat: userLatitude, userLng: userLongitude });
+        console.log('🧮 Original input:', { userLat, userLng });
+        console.log('🏢 Checking against', centers.length, 'centers');
+        console.log('🔧 Testing geolib availability:', typeof geolib, geolib ? 'available' : 'not available');
 
-    // If student has assigned center, check only that center
-    if (this.assignedCenter) {
-        console.log('👤 Student has assigned center:', this.assignedCenter);
-        const assignedCenter = centers.find(center =>
-            center._id.toString() === this.assignedCenter ||
-            center.name === this.assignedCenter
-        );
+        if (!geolib) {
+            console.error('❌ Geolib is not available!');
+            return { isWithin: false, distance: Infinity, center: null };
+        }
 
-        if (assignedCenter && assignedCenter.isActive) {
-            const centerLatitude = parseFloat(parseFloat(assignedCenter.coordinates.latitude).toFixed(6));
-            const centerLongitude = parseFloat(parseFloat(assignedCenter.coordinates.longitude).toFixed(6));
-
-            const distance = geolib.getDistance(
-                { latitude: userLatitude, longitude: userLongitude },
-                {
-                    latitude: centerLatitude,
-                    longitude: centerLongitude
-                }
+        // If student has assigned center, check only that center
+        if (this.assignedCenter) {
+            console.log('👤 Student has assigned center:', this.assignedCenter);
+            const assignedCenter = centers.find(center =>
+                center._id.toString() === this.assignedCenter ||
+                center.name === this.assignedCenter
             );
-            console.log(`📏 Distance to assigned center "${assignedCenter.name}": ${distance}m (radius: ${assignedCenter.radius}m)`);
-            return {
-                isWithin: distance <= assignedCenter.radius,
-                distance,
-                center: assignedCenter
-            };
-        }
-    }
 
-    // Check all active centers and return the closest one within radius
-    let closestValidCenter = null;
-    let minDistance = Infinity;
+            if (assignedCenter && assignedCenter.isActive) {
+                const centerLatitude = parseFloat(parseFloat(assignedCenter.coordinates.latitude).toFixed(6));
+                const centerLongitude = parseFloat(parseFloat(assignedCenter.coordinates.longitude).toFixed(6));
 
-    for (const center of centers) {
-        if (!center.isActive) {
-            console.log(`⏸️ Skipping inactive center: ${center.name}`);
-            continue;
-        }
+                let distance;
+                try {
+                    distance = geolib.getDistance(
+                        { latitude: userLatitude, longitude: userLongitude },
+                        {
+                            latitude: centerLatitude,
+                            longitude: centerLongitude
+                        }
+                    );
+                    console.log(`📏 Distance to assigned center "${assignedCenter.name}": ${distance}m (radius: ${assignedCenter.radius}m)`);
+                } catch (error) {
+                    console.error(`❌ Error calculating distance to assigned center "${assignedCenter.name}":`, error);
+                    distance = Infinity;
+                }
 
-        const centerLatitude = parseFloat(parseFloat(center.coordinates.latitude).toFixed(6));
-        const centerLongitude = parseFloat(parseFloat(center.coordinates.longitude).toFixed(6));
-
-        const distance = geolib.getDistance(
-            { latitude: userLatitude, longitude: userLongitude },
-            {
-                latitude: centerLatitude,
-                longitude: centerLongitude
+                return {
+                    isWithin: distance <= assignedCenter.radius,
+                    distance,
+                    center: assignedCenter
+                };
             }
-        );
-
-        console.log(`📏 Distance to center "${center.name}": ${distance}m (radius: ${center.radius}m) - Within radius: ${distance <= center.radius}`);
-        console.log(`📍 User coords: (${userLatitude}, ${userLongitude}) vs Center coords: (${centerLatitude}, ${centerLongitude})`);
-
-        if (distance <= center.radius && distance < minDistance) {
-            minDistance = distance;
-            closestValidCenter = center;
-            console.log(`✅ New closest valid center: ${center.name} at ${distance}m`);
         }
+
+        // Check all active centers and return the closest one within radius
+        let closestValidCenter = null;
+        let minDistance = Infinity;
+
+        for (const center of centers) {
+            if (!center.isActive) {
+                console.log(`⏸️ Skipping inactive center: ${center.name}`);
+                continue;
+            }
+
+            const centerLatitude = parseFloat(parseFloat(center.coordinates.latitude).toFixed(6));
+            const centerLongitude = parseFloat(parseFloat(center.coordinates.longitude).toFixed(6));
+
+            let distance;
+            try {
+                distance = geolib.getDistance(
+                    { latitude: userLatitude, longitude: userLongitude },
+                    {
+                        latitude: centerLatitude,
+                        longitude: centerLongitude
+                    }
+                );
+                console.log(`📏 Distance to center "${center.name}": ${distance}m (radius: ${center.radius}m) - Within radius: ${distance <= center.radius}`);
+                console.log(`📍 User coords: (${userLatitude}, ${userLongitude}) vs Center coords: (${centerLatitude}, ${centerLongitude})`);
+            } catch (error) {
+                console.error(`❌ Error calculating distance to center "${center.name}":`, error);
+                distance = Infinity;
+            }
+
+            if (distance <= center.radius && distance < minDistance) {
+                minDistance = distance;
+                closestValidCenter = center;
+                console.log(`✅ New closest valid center: ${center.name} at ${distance}m`);
+            }
+        }
+
+        const result = {
+            isWithin: !!closestValidCenter,
+            distance: closestValidCenter ? minDistance : Infinity,
+            center: closestValidCenter
+        };
+
+        console.log('🏁 Final result:', result);
+        return result;
+
+    } catch (error) {
+        console.error('❌ Error in isWithinAnyCenterRadius method:', error);
+        return { isWithin: false, distance: Infinity, center: null };
     }
-
-    const result = {
-        isWithin: !!closestValidCenter,
-        distance: closestValidCenter ? minDistance : Infinity,
-        center: closestValidCenter
-    };
-
-    console.log('🏁 Final result:', result);
-    return result;
 };
 
 export default mongoose.model('Student', studentSchema); 
