@@ -68,8 +68,20 @@ const attendanceSchema = new mongoose.Schema({
             required: true
         },
         verifiedCenter: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Center',
+            type: {
+                id: {
+                    type: mongoose.Schema.Types.ObjectId,
+                    required: false
+                },
+                name: {
+                    type: String,
+                    required: false
+                },
+                address: {
+                    type: String,
+                    required: false
+                }
+            },
             default: null
         }
     },
