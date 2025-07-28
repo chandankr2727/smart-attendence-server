@@ -401,9 +401,12 @@ async function processImageAttendance(student, processData) {
         // Provide guidance if image was sent as "image" type without GPS data
         if (messageType === 'image' && (!imageMetadata || !imageMetadata.hasGPS)) {
             console.log('Image sent as image type without GPS data, suggesting document format');
-            await whatsappService.sendTextMessage(from,
-                '💡 Tip: For better accuracy, please send photos as DOCUMENTS instead of images. This preserves GPS location data and enables automatic location detection!'
-            );
+            // Send this tip as a separate message after the main response
+            setTimeout(async () => {
+                await whatsappService.sendTextMessage(from,
+                    '💡 Pro Tip: Send photos as DOCUMENTS instead of images to enable automatic attendance marking with GPS location data!'
+                );
+            }, 2000); // Delay to avoid overwhelming the user
         }
 
         // Find or update today's attendance record
@@ -556,7 +559,7 @@ async function processImageAttendance(student, processData) {
             await attendance.save();
         }
 
-        // Send response based on whether GPS location was extracted
+        // Send response based on whether GPS location was extracted and message type
         let responseMessage;
         if (imageMetadata && imageMetadata.hasGPS) {
             const imageLocation = imageMetadata.location;
@@ -566,15 +569,33 @@ async function processImageAttendance(student, processData) {
             if (isWithinRadius) {
                 const centerName = center ? center.name : 'a center';
                 const mediaType = messageType === 'document' ? 'Document' : 'Photo';
-                responseMessage = `${mediaType} received with location data. Your attendance has been marked as present at ${centerName}!`;
+                responseMessage = `✅ ${mediaType} received with GPS location data. Your attendance has been marked as PRESENT at ${centerName}!`;
+
+                // If this is a document with GPS within radius, mark as present immediately
+                if (messageType === 'document') {
+                    console.log('🎯 Document with GPS within radius - marking attendance as present');
+                    responseMessage += `\n\n📍 GPS coordinates from image: ${imageLocation.latitude.toFixed(6)}, ${imageLocation.longitude.toFixed(6)}`;
+                    responseMessage += `\n📏 Distance to center: ${distance}m`;
+                }
             } else {
                 const centerName = center ? center.name : 'any center';
                 const mediaType = messageType === 'document' ? 'Document' : 'Photo';
-                responseMessage = `${mediaType} received. You are ${distance}m away from ${centerName}. Please come closer or share your current location.`;
+                responseMessage = `📍 ${mediaType} received with GPS location data. You are ${distance}m away from ${centerName} (required: within 2km).`;
+
+                if (messageType === 'document') {
+                    responseMessage += `\n\n❌ Too far from center - please get closer to mark attendance.`;
+                } else {
+                    responseMessage += ` Please come closer or share your current location.`;
+                }
             }
         } else {
             const mediaType = messageType === 'document' ? 'Document' : 'Photo';
-            responseMessage = `${mediaType} received. Please also share your location to complete attendance marking.`;
+
+            if (messageType === 'document') {
+                responseMessage = `📄 Document received but no GPS location data found. Please send your location separately to mark attendance.`;
+            } else {
+                responseMessage = `📷 Photo received. Please send your location or send photos as DOCUMENTS to preserve GPS data for automatic location detection.`;
+            }
         }
 
         await whatsappService.sendTextMessage(from, responseMessage);

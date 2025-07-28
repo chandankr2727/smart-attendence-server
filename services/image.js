@@ -102,13 +102,25 @@ export const imageService = {
         try {
             console.log('Extracting EXIF data from image path:', imagePath);
 
-            // Extract EXIF data including GPS coordinates
+            // Extract all EXIF data first (without filtering)
+            const allExifData = await exifr.parse(imagePath, {
+                gps: true
+            }).catch(() => null);
+
+            // Extract specific EXIF data with filtering  
             const exifData = await exifr.parse(imagePath, {
                 gps: true,
-                pick: ['GPS', 'DateTime', 'DateTimeOriginal', 'Make', 'Model', 'Software']
-            });
+                pick: ['GPS', 'DateTime', 'DateTimeOriginal', 'Make', 'Model', 'Software',
+                    'GPSLatitude', 'GPSLongitude', 'GPSLatitudeRef', 'GPSLongitudeRef',
+                    'GPSDateTime', 'GPSTimeStamp', 'GPSDateStamp']
+            }).catch(() => null);
 
-            console.log('Raw EXIF data extracted:', JSON.stringify(exifData, null, 2));
+            // Also try to get all GPS-related data without filtering
+            const gpsData = await exifr.gps(imagePath).catch(() => null);
+
+            console.log('All EXIF data extracted:', JSON.stringify(allExifData, null, 2));
+            console.log('Filtered EXIF data extracted:', JSON.stringify(exifData, null, 2));
+            console.log('GPS data extracted:', JSON.stringify(gpsData, null, 2));
 
             const metadata = {
                 hasGPS: false,
@@ -117,14 +129,67 @@ export const imageService = {
                 camera: null
             };
 
-            // Check for GPS data
-            if (exifData && exifData.latitude && exifData.longitude) {
+            // Check for GPS data - try multiple sources
+            let latitude = null;
+            let longitude = null;
+
+            // Method 1: From dedicated GPS data extraction
+            if (gpsData && gpsData.latitude && gpsData.longitude) {
+                latitude = gpsData.latitude;
+                longitude = gpsData.longitude;
+                console.log('GPS found in gpsData (method 1):', { latitude, longitude });
+            }
+            // Method 2: Direct from allExifData
+            else if (allExifData && allExifData.latitude && allExifData.longitude) {
+                latitude = allExifData.latitude;
+                longitude = allExifData.longitude;
+                console.log('GPS found in allExifData (method 2):', { latitude, longitude });
+            }
+            // Method 3: Direct from exifData
+            else if (exifData && exifData.latitude && exifData.longitude) {
+                latitude = exifData.latitude;
+                longitude = exifData.longitude;
+                console.log('GPS found in exifData (method 3):', { latitude, longitude });
+            }
+            // Method 4: From GPSLatitude/GPSLongitude fields in allExifData
+            else if (allExifData && allExifData.GPSLatitude && allExifData.GPSLongitude) {
+                latitude = allExifData.GPSLatitude;
+                longitude = allExifData.GPSLongitude;
+
+                // Handle reference directions
+                if (allExifData.GPSLatitudeRef === 'S' || allExifData.GPSLatitudeRef === 'South') {
+                    latitude = -latitude;
+                }
+                if (allExifData.GPSLongitudeRef === 'W' || allExifData.GPSLongitudeRef === 'West') {
+                    longitude = -longitude;
+                }
+                console.log('GPS found in allExifData GPSLatitude/GPSLongitude (method 4):', { latitude, longitude });
+            }
+            // Method 5: From GPSLatitude/GPSLongitude fields in exifData
+            else if (exifData && exifData.GPSLatitude && exifData.GPSLongitude) {
+                latitude = exifData.GPSLatitude;
+                longitude = exifData.GPSLongitude;
+
+                // Handle reference directions
+                if (exifData.GPSLatitudeRef === 'S' || exifData.GPSLatitudeRef === 'South') {
+                    latitude = -latitude;
+                }
+                if (exifData.GPSLongitudeRef === 'W' || exifData.GPSLongitudeRef === 'West') {
+                    longitude = -longitude;
+                }
+                console.log('GPS found in exifData GPSLatitude/GPSLongitude (method 5):', { latitude, longitude });
+            }
+
+            if (latitude !== null && longitude !== null) {
                 metadata.hasGPS = true;
                 metadata.location = {
-                    latitude: exifData.latitude,
-                    longitude: exifData.longitude,
-                    altitude: exifData.altitude || null
+                    latitude: parseFloat(latitude),
+                    longitude: parseFloat(longitude),
+                    altitude: gpsData?.altitude || allExifData?.altitude || exifData?.altitude || null
                 };
+                console.log('Final GPS coordinates:', metadata.location);
+            } else {
+                console.log('No GPS coordinates found in any format');
             }
 
             // Extract timestamp
