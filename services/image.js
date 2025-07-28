@@ -100,11 +100,15 @@ export const imageService = {
 
     async extractImageMetadata(imagePath) {
         try {
+            console.log('Extracting EXIF data from image path:', imagePath);
+
             // Extract EXIF data including GPS coordinates
             const exifData = await exifr.parse(imagePath, {
                 gps: true,
                 pick: ['GPS', 'DateTime', 'DateTimeOriginal', 'Make', 'Model', 'Software']
             });
+
+            console.log('Raw EXIF data extracted:', JSON.stringify(exifData, null, 2));
 
             const metadata = {
                 hasGPS: false,
@@ -152,6 +156,9 @@ export const imageService = {
 
     async extractMetadataFromBase64(base64Data) {
         try {
+            console.log('Starting EXIF extraction from base64 data');
+            console.log('Base64 data length:', base64Data?.length);
+
             // Create temporary file from base64 data
             const tempDir = path.join(__dirname, '../temp');
             if (!fs.existsSync(tempDir)) {
@@ -163,15 +170,26 @@ export const imageService = {
 
             // Remove data URL prefix if present and save to temp file
             const base64String = base64Data.replace(/^data:image\/[a-z]+;base64,/, '');
+            console.log('Cleaned base64 string length:', base64String.length);
+
             const buffer = Buffer.from(base64String, 'base64');
+            console.log('Buffer size:', buffer.length, 'bytes');
+
             fs.writeFileSync(tempFilepath, buffer);
+            console.log('Temporary file created:', tempFilepath);
 
             // Extract metadata
             const metadata = await this.extractImageMetadata(tempFilepath);
+            console.log('EXIF extraction completed, result:', {
+                hasGPS: metadata.hasGPS,
+                hasLocation: !!metadata.location,
+                hasTimestamp: !!metadata.timestamp,
+                fullMetadata: metadata
+            });
 
             // Clean up temp file
             fs.unlinkSync(tempFilepath);
-            console.log("metadata", metadata);
+            console.log('Temporary file cleaned up');
 
             return metadata;
         } catch (error) {

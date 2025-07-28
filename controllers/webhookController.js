@@ -207,12 +207,14 @@ async function handleIncomingMessage(message, webhookData = null) {
             webhookData
         };
 
+        console.log('Process data created:', { messageType, contentKeys: Object.keys(content || {}) });
+
         if (messageType === 'location' || (messageType === 'text' && content.location)) {
             await processLocationAttendance(student, processData);
         } else if (messageType === 'image') {
             await processImageAttendance(student, processData);
         } else if (messageType === 'document' && content.isImageDocument) {
-            console.log('Processing document as image for attendance');
+            console.log('Processing document as image for attendance, messageType:', messageType);
             // Process image documents as images for attendance
             await processImageAttendance(student, processData);
         } else if (messageType === 'document' && !content.isImageDocument) {
@@ -318,7 +320,12 @@ async function processLocationAttendance(student, processData) {
 
 // Process image-based attendance
 async function processImageAttendance(student, processData) {
-    const { messageId, from, timestamp, content } = processData;
+    console.log('processImageAttendance called with processData keys:', Object.keys(processData));
+    console.log('processData:', JSON.stringify(processData, null, 2));
+
+    const { messageId, from, timestamp, messageType, content } = processData;
+
+    console.log('Extracted variables:', { messageId, from, timestamp, messageType, contentKeys: Object.keys(content || {}) });
 
     try {
         // Log received image/document content for debugging
@@ -342,10 +349,17 @@ async function processImageAttendance(student, processData) {
 
         if (content.base64Data) {
             console.log(`Processing ${messageType} from base64 data`);
+            console.log('Base64 data available, length:', content.base64Data.length);
+            console.log('First 100 chars of base64:', content.base64Data.substring(0, 100));
+
             // Use base64 data directly
             imageUrl = await imageService.saveImageFromBase64(content.base64Data, student._id, content.contentType || content.mimeType);
+            console.log('Image saved to:', imageUrl);
+
             // Extract metadata from base64 data (this preserves EXIF data for documents)
+            console.log('Starting metadata extraction...');
             imageMetadata = await imageService.extractMetadataFromBase64(content.base64Data);
+            console.log('Metadata extraction completed');
         } else if (content.dataUrl) {
             console.log(`Processing ${messageType} from data URL`);
             // Use data URL  
@@ -372,8 +386,17 @@ async function processImageAttendance(student, processData) {
             location: imageMetadata?.location,
             timestamp: imageMetadata?.timestamp,
             camera: imageMetadata?.camera,
-            messageType: messageType
+            messageType: messageType,
+            extractionSuccess: !!imageMetadata
         });
+
+        if (!imageMetadata) {
+            console.warn('No metadata extracted from image/document');
+        } else if (!imageMetadata.hasGPS) {
+            console.warn('No GPS data found in image/document metadata');
+        } else {
+            console.log('✓ GPS location successfully extracted from image/document');
+        }
 
         // Provide guidance if image was sent as "image" type without GPS data
         if (messageType === 'image' && (!imageMetadata || !imageMetadata.hasGPS)) {
