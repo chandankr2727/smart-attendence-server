@@ -18,6 +18,13 @@ async function findClosestValidCenter(location, student) {
         console.log('📍 Available centers:', centers.length);
         centers.forEach((center, index) => {
             console.log(`Center ${index + 1}: ${center.name} at (${center.coordinates.latitude}, ${center.coordinates.longitude}) - radius: ${center.radius}m - active: ${center.isActive}`);
+
+            // Manual distance calculation for debugging
+            const manualDistance = geolib.getDistance(
+                { latitude: location.latitude, longitude: location.longitude },
+                { latitude: center.coordinates.latitude, longitude: center.coordinates.longitude }
+            );
+            console.log(`🔢 Manual distance calculation to ${center.name}: ${manualDistance}m - Within ${center.radius}m radius: ${manualDistance <= center.radius}`);
         });
 
         const result = student.isWithinAnyCenterRadius(
@@ -570,8 +577,19 @@ async function processImageAttendance(student, processData) {
         let responseMessage;
         if (imageMetadata && imageMetadata.hasGPS) {
             const imageLocation = imageMetadata.location;
+            console.log('🎯 Processing image location for attendance:', {
+                latitude: imageLocation.latitude.toFixed(6),
+                longitude: imageLocation.longitude.toFixed(6)
+            });
+
             const centerVerification = await findClosestValidCenter(imageLocation, student);
             const { isWithin: isWithinRadius, distance, center } = centerVerification;
+
+            console.log('📊 Center verification complete:', {
+                isWithinRadius,
+                distance: distance === Infinity ? 'Infinity' : `${distance}m`,
+                centerName: center ? center.name : 'none found'
+            });
 
             if (isWithinRadius) {
                 const centerName = center ? center.name : 'a center';
@@ -587,7 +605,8 @@ async function processImageAttendance(student, processData) {
             } else {
                 const centerName = center ? center.name : 'any center';
                 const mediaType = messageType === 'document' ? 'Document' : 'Photo';
-                responseMessage = `📍 ${mediaType} received with GPS location data. You are ${distance}m away from ${centerName} (required: within 2km).`;
+                const distanceText = distance === Infinity ? 'far' : `${distance}m`;
+                responseMessage = `📍 ${mediaType} received with GPS location data. You are ${distanceText} away from ${centerName} (required: within 2km).`;
 
                 if (messageType === 'document') {
                     responseMessage += `\n\n❌ Too far from center - please get closer to mark attendance.`;

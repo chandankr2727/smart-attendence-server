@@ -91,7 +91,12 @@ studentSchema.virtual('displayName').get(function () {
 studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, centers) {
     const geolib = require('geolib');
 
-    console.log('🧮 Calculating distances for user location:', { userLat, userLng });
+    // Ensure coordinates are numbers with proper precision
+    const userLatitude = parseFloat(parseFloat(userLat).toFixed(6));
+    const userLongitude = parseFloat(parseFloat(userLng).toFixed(6));
+
+    console.log('🧮 Calculating distances for user location:', { userLat: userLatitude, userLng: userLongitude });
+    console.log('🧮 Original input:', { userLat, userLng });
     console.log('🏢 Checking against', centers.length, 'centers');
 
     // If student has assigned center, check only that center
@@ -103,11 +108,14 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
         );
 
         if (assignedCenter && assignedCenter.isActive) {
+            const centerLatitude = parseFloat(parseFloat(assignedCenter.coordinates.latitude).toFixed(6));
+            const centerLongitude = parseFloat(parseFloat(assignedCenter.coordinates.longitude).toFixed(6));
+
             const distance = geolib.getDistance(
-                { latitude: userLat, longitude: userLng },
+                { latitude: userLatitude, longitude: userLongitude },
                 {
-                    latitude: assignedCenter.coordinates.latitude,
-                    longitude: assignedCenter.coordinates.longitude
+                    latitude: centerLatitude,
+                    longitude: centerLongitude
                 }
             );
             console.log(`📏 Distance to assigned center "${assignedCenter.name}": ${distance}m (radius: ${assignedCenter.radius}m)`);
@@ -129,15 +137,19 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
             continue;
         }
 
+        const centerLatitude = parseFloat(parseFloat(center.coordinates.latitude).toFixed(6));
+        const centerLongitude = parseFloat(parseFloat(center.coordinates.longitude).toFixed(6));
+
         const distance = geolib.getDistance(
-            { latitude: userLat, longitude: userLng },
+            { latitude: userLatitude, longitude: userLongitude },
             {
-                latitude: center.coordinates.latitude,
-                longitude: center.coordinates.longitude
+                latitude: centerLatitude,
+                longitude: centerLongitude
             }
         );
 
         console.log(`📏 Distance to center "${center.name}": ${distance}m (radius: ${center.radius}m) - Within radius: ${distance <= center.radius}`);
+        console.log(`📍 User coords: (${userLatitude}, ${userLongitude}) vs Center coords: (${centerLatitude}, ${centerLongitude})`);
 
         if (distance <= center.radius && distance < minDistance) {
             minDistance = distance;
