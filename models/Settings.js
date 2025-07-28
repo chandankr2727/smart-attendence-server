@@ -32,7 +32,7 @@ const settingsSchema = new mongoose.Schema({
             default: false
         }
     },
-    trainingCenters: [{
+    centers: [{
         name: {
             type: String,
             required: true
@@ -53,7 +53,7 @@ const settingsSchema = new mongoose.Schema({
         },
         radius: {
             type: Number,
-            default: 100 // meters
+            default: 2000 // meters (2km)
         },
         isActive: {
             type: Boolean,
@@ -213,25 +213,25 @@ settingsSchema.methods.updateWhatsAppSettings = function (newSettings) {
     return this.save();
 };
 
-// Method to add training center
-settingsSchema.methods.addTrainingCenter = function (centerData) {
-    this.trainingCenters.push(centerData);
+// Method to add center
+settingsSchema.methods.addCenter = function (centerData) {
+    this.centers.push(centerData);
     return this.save();
 };
 
-// Method to update training center
-settingsSchema.methods.updateTrainingCenter = function (centerId, updateData) {
-    const center = this.trainingCenters.id(centerId);
+// Method to update center
+settingsSchema.methods.updateCenter = function (centerId, updateData) {
+    const center = this.centers.id(centerId);
     if (center) {
         Object.assign(center, updateData);
         return this.save();
     }
-    throw new Error('Training center not found');
+    throw new Error('Center not found');
 };
 
-// Method to remove training center
-settingsSchema.methods.removeTrainingCenter = function (centerId) {
-    this.trainingCenters.pull(centerId);
+// Method to remove center
+settingsSchema.methods.removeCenter = function (centerId) {
+    this.centers.pull(centerId);
     return this.save();
 };
 

@@ -5,6 +5,31 @@ import { whatsappService } from '../services/whatsapp.js';
 import { geoService } from '../services/geo.js';
 import { imageService } from '../services/image.js';
 import geolib from 'geolib';
+import path from 'path';
+
+// Helper function to find the closest valid center for a location
+async function findClosestValidCenter(location, student) {
+    try {
+        const Settings = (await import('../models/Settings.js')).default;
+        const settings = await Settings.getSettings();
+        const centers = settings.centers;
+
+        const result = student.isWithinAnyCenterRadius(
+            location.latitude,
+            location.longitude,
+            centers
+        );
+
+        return result;
+    } catch (error) {
+        console.error('Error finding closest valid center:', error);
+        return {
+            isWithin: false,
+            distance: Infinity,
+            center: null
+        };
+    }
+}
 
 // POST /api/webhook/whatsapp - Handle incoming WhatsApp messages
 export const handleWhatsAppWebhook = async (req, res) => {
@@ -13,8 +38,25 @@ export const handleWhatsAppWebhook = async (req, res) => {
 
         const webhookData = req.body;
 
-        // Handle different types of webhook events
-        if (webhookData.type === 'message') {
+        // Handle WhatsApp Business API webhook structure
+        if (webhookData.originalPayload && webhookData.originalPayload.entry) {
+            for (const entry of webhookData.originalPayload.entry) {
+                for (const change of entry.changes) {
+                    if (change.value && change.value.messages) {
+                        for (const message of change.value.messages) {
+                            await handleIncomingMessage(message, webhookData);
+                        }
+                    }
+                    if (change.value && change.value.statuses) {
+                        for (const status of change.value.statuses) {
+                            await handleMessageStatus(status);
+                        }
+                    }
+                }
+            }
+        }
+        // Legacy format support
+        else if (webhookData.type === 'message') {
             await handleIncomingMessage(webhookData);
         } else if (webhookData.type === 'status') {
             await handleMessageStatus(webhookData);
@@ -30,10 +72,50 @@ export const handleWhatsAppWebhook = async (req, res) => {
 };
 
 // Handle incoming WhatsApp messages
-async function handleIncomingMessage(webhookData) {
-    const { messageId, from, timestamp, messageType, content, location } = webhookData;
-
+async function handleIncomingMessage(message, webhookData = null) {
     try {
+        // Extract message data from new format or legacy format
+        let messageId, from, timestamp, messageType, content, location;
+
+        if (message.id && message.from) {
+            // New WhatsApp Business API format
+            messageId = message.id;
+            from = message.from;
+            timestamp = message.timestamp ? new Date(parseInt(message.timestamp) * 1000) : new Date();
+            messageType = message.type;
+
+            // Extract content based on message type
+            if (messageType === 'text') {
+                content = { text: message.text.body };
+            } else if (messageType === 'image') {
+                content = {
+                    mediaId: message.image.id,
+                    mimeType: message.image.mime_type,
+                    sha256: message.image.sha256
+                };
+
+                // Check if we have processed media data
+                if (message.processedMedia) {
+                    content.mediaUrl = message.processedMedia.url;
+                    content.base64Data = message.processedMedia.base64Data;
+                    content.dataUrl = message.processedMedia.dataUrl;
+                    content.fileSize = message.processedMedia.file_size;
+                    content.contentType = message.processedMedia.contentType;
+                }
+            } else if (messageType === 'location') {
+                location = {
+                    latitude: message.location.latitude,
+                    longitude: message.location.longitude,
+                    address: message.location.address || null,
+                    name: message.location.name || null
+                };
+                content = { location: true };
+            }
+        } else {
+            // Legacy format
+            ({ messageId, from, timestamp, messageType, content, location } = message);
+        }
+
         // Find student by phone number
         const student = await Student.findOne({ phone: from });
         if (!student) {
@@ -76,12 +158,23 @@ async function handleIncomingMessage(webhookData) {
         }
 
         // Process attendance based on message type
+        const processData = {
+            messageId,
+            from,
+            timestamp,
+            messageType,
+            content,
+            location,
+            originalMessage: message,
+            webhookData
+        };
+
         if (messageType === 'location' || (messageType === 'text' && content.location)) {
-            await processLocationAttendance(student, webhookData);
+            await processLocationAttendance(student, processData);
         } else if (messageType === 'image') {
-            await processImageAttendance(student, webhookData);
+            await processImageAttendance(student, processData);
         } else if (messageType === 'text') {
-            await processTextAttendance(student, webhookData);
+            await processTextAttendance(student, processData);
         } else {
             await whatsappService.sendMessage(from, {
                 type: 'text',
@@ -90,28 +183,23 @@ async function handleIncomingMessage(webhookData) {
         }
     } catch (error) {
         console.error('Error handling incoming message:', error);
-        await whatsappService.sendMessage(from, {
-            type: 'text',
-            text: 'Sorry, there was an error processing your request. Please try again.'
-        });
+        if (message.from || message.messageId) {
+            await whatsappService.sendMessage(message.from, {
+                type: 'text',
+                text: 'Sorry, there was an error processing your request. Please try again.'
+            });
+        }
     }
 }
 
 // Process location-based attendance
-async function processLocationAttendance(student, webhookData) {
-    const { messageId, from, timestamp, location } = webhookData;
+async function processLocationAttendance(student, processData) {
+    const { messageId, from, timestamp, location } = processData;
 
     try {
-        // Verify location is within training center radius
-        const distance = geolib.getDistance(
-            { latitude: location.latitude, longitude: location.longitude },
-            {
-                latitude: student.trainingCenter.coordinates.latitude,
-                longitude: student.trainingCenter.coordinates.longitude
-            }
-        );
-
-        const isWithinRadius = distance <= student.trainingCenter.radius;
+        // Find the closest valid center for the location
+        const centerVerification = await findClosestValidCenter(location, student);
+        const { isWithin: isWithinRadius, distance, center } = centerVerification;
 
         // Create attendance record
         const attendanceData = {
@@ -134,8 +222,28 @@ async function processLocationAttendance(student, webhookData) {
                 accuracy: location.accuracy || null,
                 address: location.address || null,
                 isWithinRadius,
-                distanceFromCenter: distance
+                distanceFromCenter: distance,
+                verifiedCenter: center ? {
+                    id: center._id,
+                    name: center.name,
+                    address: center.address
+                } : null
             },
+            verification: await (async () => {
+                if (imageMetadata && imageMetadata.hasGPS) {
+                    const imageLocation = imageMetadata.location;
+                    const centerVerification = await findClosestValidCenter(imageLocation, student);
+                    const { isWithin: isWithinRadius } = centerVerification;
+                    return {
+                        isVerified: isWithinRadius,
+                        verifiedAt: isWithinRadius ? new Date() : null
+                    };
+                }
+                return {
+                    isVerified: false,
+                    verifiedAt: null
+                };
+            })(),
             metadata: {
                 webhookReceived: new Date(),
                 processed: new Date()
@@ -154,7 +262,8 @@ async function processLocationAttendance(student, webhookData) {
                 .replace('{{date}}', new Date().toLocaleDateString('en-IN'))
                 .replace('{{time}}', new Date().toLocaleTimeString('en-IN'));
         } else {
-            message = `You are ${distance}m away from the training center. ${settings.templates.rejectionMessage}`;
+            const centerName = center ? center.name : 'any center';
+            message = `You are ${distance}m away from ${centerName}. ${settings.templates.rejectionMessage}`;
         }
 
         await whatsappService.sendMessage(from, {
@@ -176,12 +285,37 @@ async function processLocationAttendance(student, webhookData) {
 }
 
 // Process image-based attendance
-async function processImageAttendance(student, webhookData) {
-    const { messageId, from, timestamp, content } = webhookData;
+async function processImageAttendance(student, processData) {
+    const { messageId, from, timestamp, content } = processData;
 
     try {
-        // Download and save image
-        const imageUrl = await imageService.downloadAndSaveImage(content.mediaUrl, student._id);
+        // Save image from base64 data or download from URL
+        let imageUrl;
+        let imageMetadata = null;
+
+        if (content.base64Data) {
+            // Use base64 data directly
+            imageUrl = await imageService.saveImageFromBase64(content.base64Data, student._id, content.contentType || content.mimeType);
+            // Extract metadata from base64 data
+            imageMetadata = await imageService.extractMetadataFromBase64(content.base64Data);
+        } else if (content.dataUrl) {
+            // Use data URL  
+            imageUrl = await imageService.saveImageFromDataUrl(content.dataUrl, student._id);
+            // Extract metadata from data URL
+            imageMetadata = await imageService.extractMetadataFromBase64(content.dataUrl);
+        } else if (content.mediaUrl) {
+            // Fallback to downloading from URL (legacy)
+            imageUrl = await imageService.downloadAndSaveImage(content.mediaUrl, student._id);
+            // Extract metadata from saved file
+            try {
+                const fullPath = path.join(process.cwd(), 'uploads/attendance', path.basename(imageUrl));
+                imageMetadata = await imageService.extractImageMetadata(fullPath);
+            } catch (error) {
+                console.error('Error extracting metadata from downloaded image:', error);
+            }
+        } else {
+            throw new Error('No image data available');
+        }
 
         // Find or update today's attendance record
         const today = new Date();
@@ -203,10 +337,45 @@ async function processImageAttendance(student, webhookData) {
                 url: imageUrl,
                 metadata: {
                     originalName: content.filename || 'image.jpg',
-                    size: content.fileSize || null,
-                    mimeType: content.mimeType || 'image/jpeg'
+                    size: content.fileSize || content.file_size || null,
+                    mimeType: content.mimeType || content.contentType || 'image/jpeg',
+                    mediaId: content.mediaId || null,
+                    sha256: content.sha256 || null,
+                    exif: imageMetadata || null
                 }
             });
+
+            // If image has GPS location and attendance doesn't have location yet, use image location
+            if (imageMetadata && imageMetadata.hasGPS && !attendance.location.isWithinRadius) {
+                const imageLocation = imageMetadata.location;
+                const centerVerification = await findClosestValidCenter(imageLocation, student);
+                const { isWithin: isWithinRadius, distance, center } = centerVerification;
+
+                // Update location with image GPS data
+                attendance.location = {
+                    coordinates: {
+                        latitude: imageLocation.latitude,
+                        longitude: imageLocation.longitude
+                    },
+                    accuracy: null,
+                    address: null,
+                    isWithinRadius,
+                    distanceFromCenter: distance,
+                    source: 'image_exif',
+                    verifiedCenter: center ? {
+                        id: center._id,
+                        name: center.name,
+                        address: center.address
+                    } : null
+                };
+
+                // Update status if now within radius
+                if (isWithinRadius) {
+                    attendance.status = attendance.isLate() ? 'late' : 'present';
+                    attendance.verification.isVerified = true;
+                    attendance.verification.verifiedAt = new Date();
+                }
+            }
 
             // If location was already verified and now we have image, mark as present
             if (attendance.location.isWithinRadius) {
@@ -218,33 +387,74 @@ async function processImageAttendance(student, webhookData) {
             await attendance.save();
         } else {
             // Create new attendance record with image only
+            const initialStatus = (imageMetadata && imageMetadata.hasGPS) ?
+                await (async () => {
+                    const imageLocation = imageMetadata.location;
+                    const centerVerification = await findClosestValidCenter(imageLocation, student);
+                    return centerVerification.isWithin ? 'present' : 'pending_verification';
+                })() : 'pending_verification';
+
             attendance = new Attendance({
                 student: student._id,
                 date: new Date(timestamp),
+                status: initialStatus,
                 whatsappMessage: {
                     messageId,
                     from,
                     timestamp: new Date(timestamp),
                     messageType: 'image',
                     content: {
-                        mediaUrl: content.mediaUrl,
-                        caption: content.caption || ''
+                        mediaUrl: content.mediaUrl || null,
+                        mediaId: content.mediaId || null,
+                        caption: content.caption || '',
+                        mimeType: content.mimeType || content.contentType || 'image/jpeg',
+                        sha256: content.sha256 || null
                     }
                 },
-                location: {
-                    coordinates: {
-                        latitude: 0, // Will be updated when location is received
-                        longitude: 0
-                    },
-                    isWithinRadius: false,
-                    distanceFromCenter: 999999
-                },
+                location: await (async () => {
+                    // Use image GPS location if available
+                    if (imageMetadata && imageMetadata.hasGPS) {
+                        const imageLocation = imageMetadata.location;
+                        const centerVerification = await findClosestValidCenter(imageLocation, student);
+                        const { isWithin: isWithinRadius, distance, center } = centerVerification;
+
+                        return {
+                            coordinates: {
+                                latitude: imageLocation.latitude,
+                                longitude: imageLocation.longitude
+                            },
+                            accuracy: null,
+                            address: null,
+                            isWithinRadius,
+                            distanceFromCenter: distance,
+                            source: 'image_exif',
+                            verifiedCenter: center ? {
+                                id: center._id,
+                                name: center.name,
+                                address: center.address
+                            } : null
+                        };
+                    } else {
+                        return {
+                            coordinates: {
+                                latitude: 0, // Will be updated when location is received
+                                longitude: 0
+                            },
+                            isWithinRadius: false,
+                            distanceFromCenter: 999999,
+                            source: 'pending'
+                        };
+                    }
+                })(),
                 images: [{
                     url: imageUrl,
                     metadata: {
                         originalName: content.filename || 'image.jpg',
-                        size: content.fileSize || null,
-                        mimeType: content.mimeType || 'image/jpeg'
+                        size: content.fileSize || content.file_size || null,
+                        mimeType: content.mimeType || content.contentType || 'image/jpeg',
+                        mediaId: content.mediaId || null,
+                        sha256: content.sha256 || null,
+                        exif: imageMetadata || null
                     }
                 }],
                 metadata: {
@@ -256,10 +466,27 @@ async function processImageAttendance(student, webhookData) {
             await attendance.save();
         }
 
-        // Send response
+        // Send response based on whether GPS location was extracted
+        let responseMessage;
+        if (imageMetadata && imageMetadata.hasGPS) {
+            const imageLocation = imageMetadata.location;
+            const centerVerification = await findClosestValidCenter(imageLocation, student);
+            const { isWithin: isWithinRadius, distance, center } = centerVerification;
+
+            if (isWithinRadius) {
+                const centerName = center ? center.name : 'a center';
+                responseMessage = `Photo received with location data. Your attendance has been marked as present at ${centerName}!`;
+            } else {
+                const centerName = center ? center.name : 'any center';
+                responseMessage = `Photo received. You are ${distance}m away from ${centerName}. Please come closer or share your current location.`;
+            }
+        } else {
+            responseMessage = 'Photo received. Please also share your location to complete attendance marking.';
+        }
+
         await whatsappService.sendMessage(from, {
             type: 'text',
-            text: 'Photo received. Please also share your location to complete attendance marking.'
+            text: responseMessage
         });
     } catch (error) {
         console.error('Error processing image attendance:', error);
@@ -268,8 +495,8 @@ async function processImageAttendance(student, webhookData) {
 }
 
 // Process text-based attendance
-async function processTextAttendance(student, webhookData) {
-    const { from, content } = webhookData;
+async function processTextAttendance(student, processData) {
+    const { from, content } = processData;
 
     try {
         const text = content.text.toLowerCase();

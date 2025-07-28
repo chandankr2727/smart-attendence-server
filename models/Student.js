@@ -35,29 +35,10 @@ const studentSchema = new mongoose.Schema({
         required: true,
         trim: true
     },
-    trainingCenter: {
-        name: {
-            type: String,
-            required: true
-        },
-        address: {
-            type: String,
-            required: true
-        },
-        coordinates: {
-            latitude: {
-                type: Number,
-                required: true
-            },
-            longitude: {
-                type: Number,
-                required: true
-            }
-        },
-        radius: {
-            type: Number,
-            default: 100 // meters
-        }
+    assignedCenter: {
+        type: String, // Will store center ID or name
+        required: false,
+        default: null // If null, student can attend at any center
     },
     profileImage: {
         type: String,
@@ -99,24 +80,66 @@ studentSchema.index({ phone: 1 });
 studentSchema.index({ studentId: 1 });
 studentSchema.index({ email: 1 });
 studentSchema.index({ course: 1, batch: 1 });
-studentSchema.index({ 'trainingCenter.name': 1 });
+studentSchema.index({ 'assignedCenter': 1 });
 
 // Virtual for full name display
 studentSchema.virtual('displayName').get(function () {
     return `${this.name} (${this.studentId})`;
 });
 
-// Method to check if student is within training center radius
-studentSchema.methods.isWithinTrainingCenter = function (userLat, userLng) {
+// Method to check if student is within any center radius
+studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, centers) {
     const geolib = require('geolib');
-    const distance = geolib.getDistance(
-        { latitude: userLat, longitude: userLng },
-        {
-            latitude: this.trainingCenter.coordinates.latitude,
-            longitude: this.trainingCenter.coordinates.longitude
+
+    // If student has assigned center, check only that center
+    if (this.assignedCenter) {
+        const assignedCenter = centers.find(center =>
+            center._id.toString() === this.assignedCenter ||
+            center.name === this.assignedCenter
+        );
+
+        if (assignedCenter && assignedCenter.isActive) {
+            const distance = geolib.getDistance(
+                { latitude: userLat, longitude: userLng },
+                {
+                    latitude: assignedCenter.coordinates.latitude,
+                    longitude: assignedCenter.coordinates.longitude
+                }
+            );
+            return {
+                isWithin: distance <= assignedCenter.radius,
+                distance,
+                center: assignedCenter
+            };
         }
-    );
-    return distance <= this.trainingCenter.radius;
+    }
+
+    // Check all active centers and return the closest one within radius
+    let closestValidCenter = null;
+    let minDistance = Infinity;
+
+    for (const center of centers) {
+        if (!center.isActive) continue;
+
+        const distance = geolib.getDistance(
+            { latitude: userLat, longitude: userLng },
+            {
+                latitude: center.coordinates.latitude,
+                longitude: center.coordinates.longitude
+            }
+        );
+
+        if (distance <= center.radius && distance < minDistance) {
+            minDistance = distance;
+            closestValidCenter = center;
+        }
+    }
+
+    return {
+        isWithin: !!closestValidCenter,
+        distance: closestValidCenter ? minDistance : Infinity,
+        center: closestValidCenter
+    };
 };
 
 export default mongoose.model('Student', studentSchema); 
