@@ -567,8 +567,9 @@ async function processImageAttendance(student, processData) {
                         attendance.session = 'outside_hours';
                     }
                 } else {
-                    // Fallback to old logic
-                    attendance.status = attendance.isLate() ? 'late' : 'present';
+                    // Fallback to basic time check when no center info
+                    const attendanceTime = attendance.date.toTimeString().slice(0, 5); // HH:MM
+                    attendance.status = attendanceTime > '09:00' ? 'late' : 'present';
                 }
 
                 attendance.verification.isVerified = true;
