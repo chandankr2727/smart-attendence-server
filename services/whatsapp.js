@@ -3,7 +3,7 @@ import Settings from '../models/Settings.js';
 
 class WhatsAppService {
     constructor() {
-        this.apiBaseUrl = process.env.WHATSAPP_API_BASE_URL || 'https://api.flowdev.com';
+        this.apiBaseUrl = process.env.WHATSAPP_API_BASE_URL || 'https://wabe.arekiv.com';
         this.settings = null;
     }
 
@@ -30,7 +30,7 @@ class WhatsAppService {
             };
 
             const response = await axios.post(
-                `${this.apiBaseUrl}/dev/v1/direct/${apiKey}`,
+                `${this.apiBaseUrl}/api/dev/v1/direct/${apiKey}`,
                 payload,
                 {
                     headers: {
@@ -89,7 +89,7 @@ class WhatsAppService {
             }
 
             const response = await axios.post(
-                `${this.apiBaseUrl}/dev/v1/template/${apiKey}`,
+                `${this.apiBaseUrl}/api/dev/v1/template/${apiKey}`,
                 payload,
                 {
                     headers: {
@@ -143,7 +143,7 @@ class WhatsAppService {
 
     async sendPhotoRequest(to) {
         return this.sendTextMessage(to,
-            'Please send a photo to complete your attendance verification.'
+            'Please send a photo as a DOCUMENT (not as image) to complete your attendance verification and preserve location data.'
         );
     }
 
@@ -151,9 +151,12 @@ class WhatsAppService {
         const instructions = `📍 Smart Attendance System Instructions:
 
 1. Share your current location
-2. Send a clear photo of yourself
-3. Ensure you are within the training center premises
-4. Both location and photo are required
+2. Send a clear photo of yourself as a DOCUMENT (not as image)
+3. Sending as document preserves GPS location data in the photo
+4. Ensure you are within the training center premises
+5. Both location and photo are required
+
+🔧 Technical tip: WhatsApp removes location data from photos sent as "image" but preserves it when sent as "document"
 
 Your attendance will be automatically verified if you are at the correct location.
 
@@ -200,7 +203,7 @@ Need help? Reply with "help" for more information.`;
             const { apiKey, accessToken } = settings.whatsappApi;
 
             const response = await axios.get(
-                `${this.apiBaseUrl}/dev/v1/message/${messageId}/status`,
+                `${this.apiBaseUrl}/api/dev/v1/message/${messageId}/status`,
                 {
                     headers: {
                         'X-Access-Token': accessToken
@@ -221,7 +224,7 @@ Need help? Reply with "help" for more information.`;
             const { apiKey, accessToken } = settings.whatsappApi;
 
             const response = await axios.get(
-                `${this.apiBaseUrl}/dev/v1/media/${mediaId}`,
+                `${this.apiBaseUrl}/api/dev/v1/media/${mediaId}`,
                 {
                     headers: {
                         'X-Access-Token': accessToken

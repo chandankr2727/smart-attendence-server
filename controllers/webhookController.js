@@ -35,6 +35,7 @@ async function findClosestValidCenter(location, student) {
 export const handleWhatsAppWebhook = async (req, res) => {
     try {
         console.log('Webhook received:', JSON.stringify(req.body, null, 2));
+        console.log('Processing webhook with timestamp:', new Date().toISOString());
 
         const webhookData = req.body;
 
@@ -79,6 +80,13 @@ async function handleIncomingMessage(message, webhookData = null) {
 
         if (message.id && message.from) {
             // New WhatsApp Business API format
+            console.log('Processing new WhatsApp Business API format message:', {
+                id: message.id,
+                from: message.from,
+                type: message.type,
+                timestamp: message.timestamp
+            });
+
             messageId = message.id;
             from = message.from;
             timestamp = message.timestamp ? new Date(parseInt(message.timestamp) * 1000) : new Date();
@@ -91,7 +99,8 @@ async function handleIncomingMessage(message, webhookData = null) {
                 content = {
                     mediaId: message.image.id,
                     mimeType: message.image.mime_type,
-                    sha256: message.image.sha256
+                    sha256: message.image.sha256,
+                    filename: message.image.filename || 'image.jpg'
                 };
 
                 // Check if we have processed media data
@@ -102,6 +111,34 @@ async function handleIncomingMessage(message, webhookData = null) {
                     content.fileSize = message.processedMedia.file_size;
                     content.contentType = message.processedMedia.contentType;
                 }
+            } else if (messageType === 'document') {
+                // Handle documents - check if it's an image document
+                const documentMimeType = message.document.mime_type;
+                const isImageDocument = documentMimeType && documentMimeType.startsWith('image/');
+
+                content = {
+                    mediaId: message.document.id,
+                    mimeType: documentMimeType,
+                    sha256: message.document.sha256,
+                    filename: message.document.filename || 'document',
+                    isImageDocument
+                };
+
+                // Check if we have processed media data
+                if (message.processedMedia) {
+                    content.mediaUrl = message.processedMedia.url;
+                    content.base64Data = message.processedMedia.base64Data;
+                    content.dataUrl = message.processedMedia.dataUrl;
+                    content.fileSize = message.processedMedia.file_size;
+                    content.contentType = message.processedMedia.contentType;
+                }
+
+                console.log('Document received:', {
+                    mimeType: documentMimeType,
+                    filename: content.filename,
+                    isImageDocument,
+                    hasProcessedMedia: !!message.processedMedia
+                });
             } else if (messageType === 'location') {
                 location = {
                     latitude: message.location.latitude,
@@ -116,22 +153,26 @@ async function handleIncomingMessage(message, webhookData = null) {
             ({ messageId, from, timestamp, messageType, content, location } = message);
         }
 
-        // Find student by phone number
-        const student = await Student.findOne({ phone: from });
+        // Find student by phone number (match last 10 digits)
+        const last10Digits = from.slice(-10);
+        const student = await Student.findOne({
+            $or: [
+                { phone: from },
+                { phone: { $regex: `${last10Digits}$` } }
+            ]
+        });
+
         if (!student) {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Sorry, you are not registered in our system. Please contact your administrator.'
-            });
+            console.log(`Student not found for phone: ${from}, last 10 digits: ${last10Digits}`);
+            await whatsappService.sendTextMessage(from, 'Sorry, you are not registered in our system. Please contact your administrator.');
             return;
         }
 
+        console.log(`Student found: ${student.name} (${student.phone}) for incoming phone: ${from}`);
+
         // Check if student is active
         if (!student.isActive) {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Your account is currently inactive. Please contact your administrator.'
-            });
+            await whatsappService.sendTextMessage(from, 'Your account is currently inactive. Please contact your administrator.');
             return;
         }
 
@@ -150,10 +191,7 @@ async function handleIncomingMessage(message, webhookData = null) {
         });
 
         if (existingAttendance && existingAttendance.status !== 'pending_verification') {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: `Your attendance for today has already been marked as ${existingAttendance.status}.`
-            });
+            await whatsappService.sendTextMessage(from, `Your attendance for today has already been marked as ${existingAttendance.status}.`);
             return;
         }
 
@@ -173,21 +211,21 @@ async function handleIncomingMessage(message, webhookData = null) {
             await processLocationAttendance(student, processData);
         } else if (messageType === 'image') {
             await processImageAttendance(student, processData);
+        } else if (messageType === 'document' && content.isImageDocument) {
+            console.log('Processing document as image for attendance');
+            // Process image documents as images for attendance
+            await processImageAttendance(student, processData);
+        } else if (messageType === 'document' && !content.isImageDocument) {
+            await whatsappService.sendTextMessage(from, 'Please send an image file or photo to mark your attendance.');
         } else if (messageType === 'text') {
             await processTextAttendance(student, processData);
         } else {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Please send your location and a photo to mark your attendance.'
-            });
+            await whatsappService.sendTextMessage(from, 'Please send your location and a photo as a document to mark your attendance.');
         }
     } catch (error) {
         console.error('Error handling incoming message:', error);
         if (message.from || message.messageId) {
-            await whatsappService.sendMessage(message.from, {
-                type: 'text',
-                text: 'Sorry, there was an error processing your request. Please try again.'
-            });
+            await whatsappService.sendTextMessage(message.from, 'Sorry, there was an error processing your request. Please try again.');
         }
     }
 }
@@ -266,17 +304,11 @@ async function processLocationAttendance(student, processData) {
             message = `You are ${distance}m away from ${centerName}. ${settings.templates.rejectionMessage}`;
         }
 
-        await whatsappService.sendMessage(from, {
-            type: 'text',
-            text: message
-        });
+        await whatsappService.sendTextMessage(from, message);
 
         // Request photo if location is verified but no image yet
         if (isWithinRadius && settings.attendanceSettings.autoVerification.requireImage) {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Please also send a photo to complete your attendance verification.'
-            });
+            await whatsappService.sendTextMessage(from, 'Please also send a photo to complete your attendance verification.');
         }
     } catch (error) {
         console.error('Error processing location attendance:', error);
@@ -289,21 +321,39 @@ async function processImageAttendance(student, processData) {
     const { messageId, from, timestamp, content } = processData;
 
     try {
+        // Log received image/document content for debugging
+        console.log(`${messageType === 'document' ? 'Document' : 'Image'} content received:`, {
+            messageType,
+            mediaId: content.mediaId,
+            mimeType: content.mimeType || content.contentType,
+            sha256: content.sha256,
+            filename: content.filename,
+            isImageDocument: content.isImageDocument,
+            fileSize: content.fileSize || content.file_size,
+            hasBase64Data: !!content.base64Data,
+            hasDataUrl: !!content.dataUrl,
+            hasMediaUrl: !!content.mediaUrl,
+            base64DataLength: content.base64Data ? content.base64Data.length : 0
+        });
+
         // Save image from base64 data or download from URL
         let imageUrl;
         let imageMetadata = null;
 
         if (content.base64Data) {
+            console.log(`Processing ${messageType} from base64 data`);
             // Use base64 data directly
             imageUrl = await imageService.saveImageFromBase64(content.base64Data, student._id, content.contentType || content.mimeType);
-            // Extract metadata from base64 data
+            // Extract metadata from base64 data (this preserves EXIF data for documents)
             imageMetadata = await imageService.extractMetadataFromBase64(content.base64Data);
         } else if (content.dataUrl) {
+            console.log(`Processing ${messageType} from data URL`);
             // Use data URL  
             imageUrl = await imageService.saveImageFromDataUrl(content.dataUrl, student._id);
-            // Extract metadata from data URL
+            // Extract metadata from data URL (this preserves EXIF data for documents)
             imageMetadata = await imageService.extractMetadataFromBase64(content.dataUrl);
         } else if (content.mediaUrl) {
+            console.log(`Processing ${messageType} from media URL (legacy)`);
             // Fallback to downloading from URL (legacy)
             imageUrl = await imageService.downloadAndSaveImage(content.mediaUrl, student._id);
             // Extract metadata from saved file
@@ -314,7 +364,23 @@ async function processImageAttendance(student, processData) {
                 console.error('Error extracting metadata from downloaded image:', error);
             }
         } else {
-            throw new Error('No image data available');
+            throw new Error(`No ${messageType} data available`);
+        }
+
+        console.log('Extracted image metadata:', {
+            hasGPS: imageMetadata?.hasGPS,
+            location: imageMetadata?.location,
+            timestamp: imageMetadata?.timestamp,
+            camera: imageMetadata?.camera,
+            messageType: messageType
+        });
+
+        // Provide guidance if image was sent as "image" type without GPS data
+        if (messageType === 'image' && (!imageMetadata || !imageMetadata.hasGPS)) {
+            console.log('Image sent as image type without GPS data, suggesting document format');
+            await whatsappService.sendTextMessage(from,
+                '💡 Tip: For better accuracy, please send photos as DOCUMENTS instead of images. This preserves GPS location data and enables automatic location detection!'
+            );
         }
 
         // Find or update today's attendance record
@@ -402,13 +468,14 @@ async function processImageAttendance(student, processData) {
                     messageId,
                     from,
                     timestamp: new Date(timestamp),
-                    messageType: 'image',
+                    messageType: messageType,
                     content: {
                         mediaUrl: content.mediaUrl || null,
                         mediaId: content.mediaId || null,
                         caption: content.caption || '',
                         mimeType: content.mimeType || content.contentType || 'image/jpeg',
-                        sha256: content.sha256 || null
+                        sha256: content.sha256 || null,
+                        filename: content.filename || null
                     }
                 },
                 location: await (async () => {
@@ -475,19 +542,19 @@ async function processImageAttendance(student, processData) {
 
             if (isWithinRadius) {
                 const centerName = center ? center.name : 'a center';
-                responseMessage = `Photo received with location data. Your attendance has been marked as present at ${centerName}!`;
+                const mediaType = messageType === 'document' ? 'Document' : 'Photo';
+                responseMessage = `${mediaType} received with location data. Your attendance has been marked as present at ${centerName}!`;
             } else {
                 const centerName = center ? center.name : 'any center';
-                responseMessage = `Photo received. You are ${distance}m away from ${centerName}. Please come closer or share your current location.`;
+                const mediaType = messageType === 'document' ? 'Document' : 'Photo';
+                responseMessage = `${mediaType} received. You are ${distance}m away from ${centerName}. Please come closer or share your current location.`;
             }
         } else {
-            responseMessage = 'Photo received. Please also share your location to complete attendance marking.';
+            const mediaType = messageType === 'document' ? 'Document' : 'Photo';
+            responseMessage = `${mediaType} received. Please also share your location to complete attendance marking.`;
         }
 
-        await whatsappService.sendMessage(from, {
-            type: 'text',
-            text: responseMessage
-        });
+        await whatsappService.sendTextMessage(from, responseMessage);
     } catch (error) {
         console.error('Error processing image attendance:', error);
         throw error;
@@ -502,29 +569,23 @@ async function processTextAttendance(student, processData) {
         const text = content.text.toLowerCase();
 
         if (text.includes('attendance') || text.includes('present') || text.includes('here')) {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'To mark your attendance, please share your current location and a photo.'
-            });
+            await whatsappService.sendTextMessage(from, 'To mark your attendance, please share your current location and send a photo as a document (to preserve location data).');
         } else if (text.includes('help') || text.includes('?')) {
             const helpMessage = `Smart Attendance System Help:
       
 1. Share your location to mark attendance
-2. Send a photo for verification
-3. Both location and photo are required
-4. You must be at the training center
+2. Send a photo as a DOCUMENT (not as image) for verification
+3. Sending as document preserves GPS location data in the photo
+4. Both location and photo are required
+5. You must be at the training center
+
+📍 Pro tip: Send photos as documents to enable automatic location detection from image metadata!
 
 Need more help? Contact your administrator.`;
 
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: helpMessage
-            });
+            await whatsappService.sendTextMessage(from, helpMessage);
         } else {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Please share your location and a photo to mark your attendance.'
-            });
+            await whatsappService.sendTextMessage(from, 'Please share your location and send a photo as a document to mark your attendance.');
         }
     } catch (error) {
         console.error('Error processing text attendance:', error);
@@ -565,10 +626,7 @@ async function handleButtonReply(webhookData) {
         const { buttonPayload, buttonText } = context;
 
         if (buttonPayload === 'mark_attendance') {
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: 'Please share your location and a photo to mark your attendance.'
-            });
+            await whatsappService.sendTextMessage(from, 'Please share your location and send a photo as a document to mark your attendance.');
         } else if (buttonPayload === 'check_status') {
             // Get today's attendance status
             const today = new Date();
@@ -587,10 +645,7 @@ async function handleButtonReply(webhookData) {
             const status = attendance ? attendance.status : 'absent';
             const message = `Your attendance status for today: ${status.toUpperCase()}`;
 
-            await whatsappService.sendMessage(from, {
-                type: 'text',
-                text: message
-            });
+            await whatsappService.sendTextMessage(from, message);
         }
     } catch (error) {
         console.error('Error handling button reply:', error);
