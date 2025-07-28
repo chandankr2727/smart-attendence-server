@@ -8,8 +8,7 @@ import {
     deleteStudent,
     bulkImportStudents,
     exportStudentsToCSV,
-    getStudentStats,
-    upload
+    getStudentStats
 } from '../controllers/studentsController.js';
 
 const router = express.Router();
@@ -21,16 +20,16 @@ router.get('/', getAllStudents);
 router.get('/:id', getStudentById);
 
 // POST /api/students - Create new student
-router.post('/', upload.single('profileImage'), validateStudent, createStudent);
+router.post('/', createStudent);
 
 // PUT /api/students/:id - Update student
-router.put('/:id', upload.single('profileImage'), validateStudentUpdate, updateStudent);
+router.put('/:id', updateStudent);
 
 // DELETE /api/students/:id - Delete student
 router.delete('/:id', deleteStudent);
 
 // POST /api/students/bulk-import - Import students from CSV or Excel
-router.post('/bulk-import', upload.single('importFile'), bulkImportStudents);
+router.post('/bulk-import', bulkImportStudents);
 
 // GET /api/students/export/csv - Export students to CSV
 router.get('/export/csv', exportStudentsToCSV);

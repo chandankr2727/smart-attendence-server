@@ -1,62 +1,8 @@
-import multer from 'multer';
 import csv from 'csv-parser';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import * as XLSX from 'xlsx';
 import Student from '../models/Student.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../uploads/students');
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, `${file.fieldname}-${uniqueSuffix}${path.extname(file.originalname)}`);
-    }
-});
-
-export const upload = multer({
-    storage,
-    limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
-    },
-    fileFilter: (req, file, cb) => {
-        if (file.fieldname === 'importFile') {
-            // File validation for CSV and Excel
-            const allowedMimeTypes = [
-                'text/csv',
-                'application/vnd.ms-excel',
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            ];
-            const allowedExtensions = ['.csv', '.xls', '.xlsx'];
-            const fileExtension = path.extname(file.originalname).toLowerCase();
-
-            if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(fileExtension)) {
-                cb(null, true);
-            } else {
-                cb(new Error('Only CSV and Excel files are allowed for bulk import'), false);
-            }
-        } else if (file.fieldname === 'profileImage') {
-            // Image file validation
-            if (file.mimetype.startsWith('image/')) {
-                cb(null, true);
-            } else {
-                cb(new Error('Only image files are allowed for profile pictures'), false);
-            }
-        } else {
-            cb(new Error('Unexpected field'), false);
-        }
-    }
-});
 
 // GET /api/students - Get all students with pagination and filtering
 export const getAllStudents = async (req, res) => {
@@ -67,7 +13,6 @@ export const getAllStudents = async (req, res) => {
             search,
             course,
             batch,
-            trainingCenter,
             isActive,
             sortBy = 'createdAt',
             sortOrder = 'desc'
@@ -87,7 +32,6 @@ export const getAllStudents = async (req, res) => {
 
         if (course) filter.course = { $regex: course, $options: 'i' };
         if (batch) filter.batch = { $regex: batch, $options: 'i' };
-        if (trainingCenter) filter['trainingCenter.name'] = { $regex: trainingCenter, $options: 'i' };
         if (isActive !== undefined) filter.isActive = isActive === 'true';
 
         // Build sort object
@@ -112,8 +56,7 @@ export const getAllStudents = async (req, res) => {
                 $group: {
                     _id: null,
                     total: { $sum: 1 },
-                    active: { $sum: { $cond: ['$isActive', 1, 0] } },
-                    whatsappVerified: { $sum: { $cond: ['$whatsappVerified', 1, 0] } }
+                    active: { $sum: { $cond: ['$isActive', 1, 0] } }
                 }
             }
         ]);
@@ -126,7 +69,7 @@ export const getAllStudents = async (req, res) => {
                 total,
                 limit: parseInt(limit)
             },
-            stats: stats[0] || { total: 0, active: 0, whatsappVerified: 0 }
+            stats: stats[0] || { total: 0, active: 0 }
         });
     } catch (error) {
         console.error('Error fetching students:', error);
@@ -153,15 +96,6 @@ export const createStudent = async (req, res) => {
     try {
         const studentData = req.body;
 
-        // Parse nested objects if they come as strings
-        if (typeof studentData.trainingCenter === 'string') {
-            studentData.trainingCenter = JSON.parse(studentData.trainingCenter);
-        }
-
-        if (req.file) {
-            studentData.profileImage = `/uploads/students/${req.file.filename}`;
-        }
-
         const student = new Student(studentData);
         await student.save();
 
@@ -185,15 +119,6 @@ export const createStudent = async (req, res) => {
 export const updateStudent = async (req, res) => {
     try {
         const studentData = req.body;
-
-        // Parse nested objects if they come as strings
-        if (typeof studentData.trainingCenter === 'string') {
-            studentData.trainingCenter = JSON.parse(studentData.trainingCenter);
-        }
-
-        if (req.file) {
-            studentData.profileImage = `/uploads/students/${req.file.filename}`;
-        }
 
         const student = await Student.findByIdAndUpdate(
             req.params.id,
@@ -229,13 +154,7 @@ export const deleteStudent = async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Delete profile image if exists
-        if (student.profileImage) {
-            const imagePath = path.join(__dirname, '..', student.profileImage);
-            if (fs.existsSync(imagePath)) {
-                fs.unlinkSync(imagePath);
-            }
-        }
+
 
         res.json({ message: 'Student deleted successfully' });
     } catch (error) {
@@ -281,15 +200,6 @@ export const bulkImportStudents = async (req, res) => {
                         studentId: row.student_id || row.id || row.roll_number || row.studentid,
                         course: row.course,
                         batch: row.batch,
-                        trainingCenter: {
-                            name: row.training_center || row.center_name || row.trainingcenter,
-                            address: row.center_address || row.address,
-                            coordinates: {
-                                latitude: parseFloat(row.latitude || row.lat) || 0,
-                                longitude: parseFloat(row.longitude || row.lng) || 0
-                            },
-                            radius: parseInt(row.radius) || 100
-                        },
                         metadata: {
                             importedFrom: fileExtension === '.csv' ? 'csv' : 'excel',
                             importedAt: new Date(),
@@ -383,15 +293,13 @@ async function parseExcelFile(filePath) {
     }
 }
 
-
-
 // GET /api/students/export/csv - Export students to CSV
 export const exportStudentsToCSV = async (req, res) => {
     try {
         const students = await Student.find({}).lean();
 
         // Convert to CSV format
-        const csvHeader = 'Name,Email,Phone,Student ID,Course,Batch,Training Center,Center Address,Latitude,Longitude,Active,WhatsApp Verified,Created At\n';
+        const csvHeader = 'Name,Email,Phone,Student ID,Course,Batch,Active,Created At\n';
         const csvRows = students.map(student => {
             return [
                 student.name,
@@ -400,12 +308,7 @@ export const exportStudentsToCSV = async (req, res) => {
                 student.studentId,
                 student.course,
                 student.batch,
-                student.trainingCenter.name,
-                student.trainingCenter.address,
-                student.trainingCenter.coordinates.latitude,
-                student.trainingCenter.coordinates.longitude,
                 student.isActive,
-                student.whatsappVerified,
                 student.createdAt.toISOString()
             ].map(field => `"${field}"`).join(',');
         }).join('\n');
@@ -429,8 +332,7 @@ export const getStudentStats = async (req, res) => {
                 $group: {
                     _id: null,
                     totalStudents: { $sum: 1 },
-                    activeStudents: { $sum: { $cond: ['$isActive', 1, 0] } },
-                    whatsappVerified: { $sum: { $cond: ['$whatsappVerified', 1, 0] } }
+                    activeStudents: { $sum: { $cond: ['$isActive', 1, 0] } }
                 }
             }
         ]);
@@ -445,16 +347,10 @@ export const getStudentStats = async (req, res) => {
             { $sort: { count: -1 } }
         ]);
 
-        const centerStats = await Student.aggregate([
-            { $group: { _id: '$trainingCenter.name', count: { $sum: 1 } } },
-            { $sort: { count: -1 } }
-        ]);
-
         res.json({
-            overview: stats[0] || { totalStudents: 0, activeStudents: 0, whatsappVerified: 0 },
+            overview: stats[0] || { totalStudents: 0, activeStudents: 0 },
             courseDistribution: courseStats,
-            batchDistribution: batchStats,
-            centerDistribution: centerStats
+            batchDistribution: batchStats
         });
     } catch (error) {
         console.error('Error fetching student stats:', error);
