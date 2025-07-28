@@ -10,9 +10,15 @@ import path from 'path';
 // Helper function to find the closest valid center for a location
 async function findClosestValidCenter(location, student) {
     try {
+        console.log('🔍 Finding closest center for location:', location);
         const Settings = (await import('../models/Settings.js')).default;
         const settings = await Settings.getSettings();
         const centers = settings.centers;
+
+        console.log('📍 Available centers:', centers.length);
+        centers.forEach((center, index) => {
+            console.log(`Center ${index + 1}: ${center.name} at (${center.coordinates.latitude}, ${center.coordinates.longitude}) - radius: ${center.radius}m - active: ${center.isActive}`);
+        });
 
         const result = student.isWithinAnyCenterRadius(
             location.latitude,
@@ -20,6 +26,7 @@ async function findClosestValidCenter(location, student) {
             centers
         );
 
+        console.log('🎯 Center verification result:', result);
         return result;
     } catch (error) {
         console.error('Error finding closest valid center:', error);

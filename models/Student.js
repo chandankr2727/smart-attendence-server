@@ -91,8 +91,12 @@ studentSchema.virtual('displayName').get(function () {
 studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, centers) {
     const geolib = require('geolib');
 
+    console.log('🧮 Calculating distances for user location:', { userLat, userLng });
+    console.log('🏢 Checking against', centers.length, 'centers');
+
     // If student has assigned center, check only that center
     if (this.assignedCenter) {
+        console.log('👤 Student has assigned center:', this.assignedCenter);
         const assignedCenter = centers.find(center =>
             center._id.toString() === this.assignedCenter ||
             center.name === this.assignedCenter
@@ -106,6 +110,7 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
                     longitude: assignedCenter.coordinates.longitude
                 }
             );
+            console.log(`📏 Distance to assigned center "${assignedCenter.name}": ${distance}m (radius: ${assignedCenter.radius}m)`);
             return {
                 isWithin: distance <= assignedCenter.radius,
                 distance,
@@ -119,7 +124,10 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
     let minDistance = Infinity;
 
     for (const center of centers) {
-        if (!center.isActive) continue;
+        if (!center.isActive) {
+            console.log(`⏸️ Skipping inactive center: ${center.name}`);
+            continue;
+        }
 
         const distance = geolib.getDistance(
             { latitude: userLat, longitude: userLng },
@@ -129,17 +137,23 @@ studentSchema.methods.isWithinAnyCenterRadius = function (userLat, userLng, cent
             }
         );
 
+        console.log(`📏 Distance to center "${center.name}": ${distance}m (radius: ${center.radius}m) - Within radius: ${distance <= center.radius}`);
+
         if (distance <= center.radius && distance < minDistance) {
             minDistance = distance;
             closestValidCenter = center;
+            console.log(`✅ New closest valid center: ${center.name} at ${distance}m`);
         }
     }
 
-    return {
+    const result = {
         isWithin: !!closestValidCenter,
         distance: closestValidCenter ? minDistance : Infinity,
         center: closestValidCenter
     };
+
+    console.log('🏁 Final result:', result);
+    return result;
 };
 
 export default mongoose.model('Student', studentSchema); 
