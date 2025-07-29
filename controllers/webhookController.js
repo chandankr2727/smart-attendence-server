@@ -240,8 +240,16 @@ async function handleIncomingMessage(message, webhookData = null) {
         }
     } catch (error) {
         console.error('Error handling incoming message:', error);
-        if (message.from || message.messageId) {
-            await whatsappService.sendTextMessage(message.from, 'Sorry, there was an error processing your request. Please try again.');
+        console.error('Error stack:', error.stack);
+
+        // Only send error message if we have the necessary info and it's a real error
+        if ((message.from || from) && error.message !== 'Processing completed successfully') {
+            const phoneNumber = message.from || from;
+            try {
+                await whatsappService.sendTextMessage(phoneNumber, 'Sorry, there was an error processing your request. Please try again.');
+            } catch (sendError) {
+                console.error('Error sending error message:', sendError);
+            }
         }
     }
 }
@@ -265,27 +273,36 @@ async function processLocationAttendance(student, processData) {
         let status = 'pending_verification';
 
         if (center && center.timeSlots) {
-            const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
-            session = timeSlotInfo.slot || 'unknown';
+            try {
+                const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
+                session = timeSlotInfo.slot || 'unknown';
 
-            if (timeSlotInfo.isWithinHours) {
-                timeSlot = {
-                    expected: {
-                        start: timeSlotInfo.startTime,
-                        end: timeSlotInfo.endTime
+                if (timeSlotInfo.isWithinHours) {
+                    timeSlot = {
+                        expected: {
+                            start: timeSlotInfo.startTime,
+                            end: timeSlotInfo.endTime
+                        }
+                    };
+
+                    if (isWithinRadius) {
+                        const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
+                        status = isLate ? 'late' : 'present';
+                    } else {
+                        status = 'pending_verification';
                     }
-                };
-
-                if (isWithinRadius) {
-                    const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
-                    status = isLate ? 'late' : 'present';
                 } else {
-                    status = 'pending_verification';
+                    // Outside operating hours
+                    status = 'late';
+                    session = 'outside_hours';
                 }
-            } else {
-                // Outside operating hours
-                status = 'late';
-                session = 'outside_hours';
+            } catch (timeSlotError) {
+                console.error('Error processing time slot:', timeSlotError);
+                // Fallback to basic logic if time slot processing fails
+                if (isWithinRadius) {
+                    status = 'present';
+                    session = 'manual';
+                }
             }
         } else if (isWithinRadius) {
             // Fallback logic when center doesn't have time slots
@@ -341,11 +358,17 @@ async function processLocationAttendance(student, processData) {
 
         if (isWithinRadius) {
             const timeInfo = timeSlot.expected.start ? ` during ${session} session (${timeSlot.expected.start}-${timeSlot.expected.end})` : '';
-            message = settings.templates.confirmationMessage
-                .replace('{{date}}', new Date().toLocaleDateString('en-IN'))
-                .replace('{{time}}', new Date().toLocaleTimeString('en-IN'))
-                .replace('{{centerName}}', center ? center.name : 'center')
-                .replace('{{studentName}}', student.name);
+
+            try {
+                message = settings.templates.confirmationMessage
+                    .replace('{{date}}', new Date().toLocaleDateString('en-IN'))
+                    .replace('{{time}}', new Date().toLocaleTimeString('en-IN'))
+                    .replace('{{centerName}}', center ? center.name : 'center')
+                    .replace('{{studentName}}', student.name);
+            } catch (templateError) {
+                console.error('Error processing confirmation template:', templateError);
+                message = `✅ Your attendance has been marked as ${status.toUpperCase()} at ${center ? center.name : 'center'}!`;
+            }
 
             if (status === 'late') {
                 message += `\n⚠️ Note: You are marked as LATE${timeInfo}.`;
@@ -354,7 +377,12 @@ async function processLocationAttendance(student, processData) {
             }
         } else {
             const centerName = center ? center.name : 'any center';
-            message = `You are ${distance}m away from ${centerName}. ${settings.templates.rejectionMessage}`;
+            try {
+                message = `You are ${distance}m away from ${centerName}. ${settings.templates.rejectionMessage}`;
+            } catch (templateError) {
+                console.error('Error processing rejection template:', templateError);
+                message = `You are ${distance}m away from ${centerName}. Please come closer to mark your attendance.`;
+            }
         }
 
         await whatsappService.sendTextMessage(from, message);
@@ -514,66 +542,84 @@ async function processImageAttendance(student, processData) {
 
                 // Update status if now within radius using center-specific time checking
                 if (isWithinRadius && center) {
-                    const settings = await Settings.getSettings();
-                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+                    try {
+                        const settings = await Settings.getSettings();
+                        const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
 
-                    // Update time slot and session information
-                    const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
-                    attendance.session = timeSlotInfo.slot || 'unknown';
-                    attendance.timeSlot = {
-                        expected: {
-                            start: timeSlotInfo.startTime || null,
-                            end: timeSlotInfo.endTime || null
+                        // Update time slot and session information
+                        const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
+                        attendance.session = timeSlotInfo.slot || 'unknown';
+                        attendance.timeSlot = {
+                            expected: {
+                                start: timeSlotInfo.startTime || null,
+                                end: timeSlotInfo.endTime || null
+                            }
+                        };
+
+                        if (timeSlotInfo.isWithinHours) {
+                            const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
+                            attendance.status = isLate ? 'late' : 'present';
+                        } else {
+                            attendance.status = 'late';
+                            attendance.session = 'outside_hours';
                         }
-                    };
 
-                    if (timeSlotInfo.isWithinHours) {
-                        const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
-                        attendance.status = isLate ? 'late' : 'present';
-                    } else {
-                        attendance.status = 'late';
-                        attendance.session = 'outside_hours';
+                        attendance.verification.isVerified = true;
+                        attendance.verification.verifiedAt = new Date();
+                    } catch (timeSlotError) {
+                        console.error('Error processing time slot for image attendance:', timeSlotError);
+                        // Fallback to basic logic
+                        attendance.status = 'present';
+                        attendance.session = 'manual';
+                        attendance.verification.isVerified = true;
+                        attendance.verification.verifiedAt = new Date();
                     }
-
-                    attendance.verification.isVerified = true;
-                    attendance.verification.verifiedAt = new Date();
                 }
             }
 
             // If location was already verified and now we have image, mark as present
             if (attendance.location.isWithinRadius && attendance.location.verifiedCenter) {
-                const settings = await Settings.getSettings();
-                const center = settings.centers.find(c =>
-                    c._id.toString() === attendance.location.verifiedCenter.id.toString()
-                );
+                try {
+                    const settings = await Settings.getSettings();
+                    const center = settings.centers.find(c =>
+                        c._id.toString() === attendance.location.verifiedCenter.id.toString()
+                    );
 
-                if (center) {
-                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
-                    const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
+                    if (center) {
+                        const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+                        const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
 
-                    attendance.session = timeSlotInfo.slot || 'unknown';
-                    attendance.timeSlot = {
-                        expected: {
-                            start: timeSlotInfo.startTime || null,
-                            end: timeSlotInfo.endTime || null
+                        attendance.session = timeSlotInfo.slot || 'unknown';
+                        attendance.timeSlot = {
+                            expected: {
+                                start: timeSlotInfo.startTime || null,
+                                end: timeSlotInfo.endTime || null
+                            }
+                        };
+
+                        if (timeSlotInfo.isWithinHours) {
+                            const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
+                            attendance.status = isLate ? 'late' : 'present';
+                        } else {
+                            attendance.status = 'late';
+                            attendance.session = 'outside_hours';
                         }
-                    };
-
-                    if (timeSlotInfo.isWithinHours) {
-                        const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
-                        attendance.status = isLate ? 'late' : 'present';
                     } else {
-                        attendance.status = 'late';
-                        attendance.session = 'outside_hours';
+                        // Fallback to basic time check when no center info
+                        const attendanceTime = attendance.date.toTimeString().slice(0, 5); // HH:MM
+                        attendance.status = attendanceTime > '09:00' ? 'late' : 'present';
                     }
-                } else {
-                    // Fallback to basic time check when no center info
-                    const attendanceTime = attendance.date.toTimeString().slice(0, 5); // HH:MM
-                    attendance.status = attendanceTime > '09:00' ? 'late' : 'present';
-                }
 
-                attendance.verification.isVerified = true;
-                attendance.verification.verifiedAt = new Date();
+                    attendance.verification.isVerified = true;
+                    attendance.verification.verifiedAt = new Date();
+                } catch (timeSlotError) {
+                    console.error('Error processing time slot for existing attendance:', timeSlotError);
+                    // Fallback to basic logic
+                    attendance.status = 'present';
+                    attendance.session = 'manual';
+                    attendance.verification.isVerified = true;
+                    attendance.verification.verifiedAt = new Date();
+                }
             }
 
             await attendance.save();
@@ -641,24 +687,31 @@ async function processImageAttendance(student, processData) {
 
                 // If within radius and we have center info, determine proper status and time slot
                 if (isWithinRadius && center) {
-                    const settings = await Settings.getSettings();
-                    const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
+                    try {
+                        const settings = await Settings.getSettings();
+                        const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
 
-                    const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
-                    initialData.session = timeSlotInfo.slot || 'unknown';
-                    initialData.timeSlot = {
-                        expected: {
-                            start: timeSlotInfo.startTime || null,
-                            end: timeSlotInfo.endTime || null
+                        const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
+                        initialData.session = timeSlotInfo.slot || 'unknown';
+                        initialData.timeSlot = {
+                            expected: {
+                                start: timeSlotInfo.startTime || null,
+                                end: timeSlotInfo.endTime || null
+                            }
+                        };
+
+                        if (timeSlotInfo.isWithinHours) {
+                            const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
+                            initialData.status = isLate ? 'late' : 'present';
+                        } else {
+                            initialData.status = 'late';
+                            initialData.session = 'outside_hours';
                         }
-                    };
-
-                    if (timeSlotInfo.isWithinHours) {
-                        const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
-                        initialData.status = isLate ? 'late' : 'present';
-                    } else {
-                        initialData.status = 'late';
-                        initialData.session = 'outside_hours';
+                    } catch (timeSlotError) {
+                        console.error('Error processing time slot for new image attendance:', timeSlotError);
+                        // Fallback to basic logic
+                        initialData.status = 'present';
+                        initialData.session = 'manual';
                     }
                 }
             } else {
