@@ -103,8 +103,18 @@ async function handleIncomingMessage(message, webhookData = null) {
 
             messageId = message.id;
             from = message.from;
-            timestamp = message.timestamp ? new Date(parseInt(message.timestamp) * 1000) : new Date();
+            // WhatsApp timestamp is in seconds, convert to milliseconds for JavaScript Date
+            const webhookTimestamp = message.timestamp ? new Date(parseInt(message.timestamp) * 1000) : new Date();
+            // Use current time for attendance processing as webhook timestamp might be incorrect
+            timestamp = new Date();
             messageType = message.type;
+
+            console.log('📅 Timestamp info:', {
+                originalTimestamp: message.timestamp,
+                webhookTimestamp: webhookTimestamp.toISOString(),
+                currentTime: timestamp.toISOString(),
+                localTime: timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+            });
 
             // Extract content based on message type
             if (messageType === 'text') {
@@ -268,16 +278,25 @@ async function processLocationAttendance(student, processData) {
         const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
 
         // Determine time slot and status based on center
-        let session = 'unknown';
+        let session = 'full_day'; // Default to valid enum value
         let timeSlot = { expected: { start: null, end: null } };
         let status = 'pending_verification';
 
         if (center && center.timeSlots) {
             try {
-                const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
-                session = timeSlotInfo.slot || 'unknown';
+                const attendanceDate = new Date(timestamp);
+                console.log('🕐 Processing time slot for location attendance:');
+                console.log('🕐 Attendance date:', attendanceDate.toISOString());
+                console.log('🕐 Local time (IST):', attendanceDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
+                console.log('🕐 Time string (HH:MM):', attendanceDate.toTimeString().slice(0, 5));
+                console.log('🕐 Center time slots:', JSON.stringify(center.timeSlots, null, 2));
 
-                if (timeSlotInfo.isWithinHours) {
+                const timeSlotInfo = student.getCurrentTimeSlot(center, attendanceDate);
+                console.log('🕐 Time slot info result:', timeSlotInfo);
+
+                if (timeSlotInfo.isWithinHours && timeSlotInfo.slot) {
+                    // Valid time slot found
+                    session = timeSlotInfo.slot; // This will be 'morning', 'afternoon', or 'evening'
                     timeSlot = {
                         expected: {
                             start: timeSlotInfo.startTime,
@@ -292,21 +311,26 @@ async function processLocationAttendance(student, processData) {
                         status = 'pending_verification';
                     }
                 } else {
-                    // Outside operating hours
-                    status = 'late';
-                    session = 'outside_hours';
+                    // Outside operating hours - still mark as late if within radius
+                    session = 'full_day'; // Use valid enum value instead of 'outside_hours'
+                    if (isWithinRadius) {
+                        status = 'late'; // Always late if outside time slots
+                    } else {
+                        status = 'pending_verification';
+                    }
                 }
             } catch (timeSlotError) {
                 console.error('Error processing time slot:', timeSlotError);
                 // Fallback to basic logic if time slot processing fails
                 if (isWithinRadius) {
                     status = 'present';
-                    session = 'manual';
+                    session = 'full_day';
                 }
             }
         } else if (isWithinRadius) {
             // Fallback logic when center doesn't have time slots
             status = 'present';
+            session = 'full_day';
         }
 
         // Create attendance record
@@ -371,7 +395,11 @@ async function processLocationAttendance(student, processData) {
             }
 
             if (status === 'late') {
-                message += `\n⚠️ Note: You are marked as LATE${timeInfo}.`;
+                if (timeInfo) {
+                    message += `\n⚠️ Note: You are marked as LATE${timeInfo}.`;
+                } else {
+                    message += `\n⚠️ Note: You are marked as LATE (outside operating hours).`;
+                }
             } else if (timeInfo) {
                 message += `\n✅ Attendance marked for ${session} session.`;
             }
@@ -548,20 +576,21 @@ async function processImageAttendance(student, processData) {
 
                         // Update time slot and session information
                         const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
-                        attendance.session = timeSlotInfo.slot || 'unknown';
-                        attendance.timeSlot = {
-                            expected: {
-                                start: timeSlotInfo.startTime || null,
-                                end: timeSlotInfo.endTime || null
-                            }
-                        };
 
-                        if (timeSlotInfo.isWithinHours) {
+                        if (timeSlotInfo.isWithinHours && timeSlotInfo.slot) {
+                            attendance.session = timeSlotInfo.slot; // Valid enum value
+                            attendance.timeSlot = {
+                                expected: {
+                                    start: timeSlotInfo.startTime || null,
+                                    end: timeSlotInfo.endTime || null
+                                }
+                            };
                             const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
                             attendance.status = isLate ? 'late' : 'present';
                         } else {
+                            // Outside operating hours
+                            attendance.session = 'full_day'; // Use valid enum value
                             attendance.status = 'late';
-                            attendance.session = 'outside_hours';
                         }
 
                         attendance.verification.isVerified = true;
@@ -570,7 +599,7 @@ async function processImageAttendance(student, processData) {
                         console.error('Error processing time slot for image attendance:', timeSlotError);
                         // Fallback to basic logic
                         attendance.status = 'present';
-                        attendance.session = 'manual';
+                        attendance.session = 'full_day'; // Use valid enum value
                         attendance.verification.isVerified = true;
                         attendance.verification.verifiedAt = new Date();
                     }
@@ -589,20 +618,20 @@ async function processImageAttendance(student, processData) {
                         const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
                         const timeSlotInfo = student.getCurrentTimeSlot(center, attendance.date);
 
-                        attendance.session = timeSlotInfo.slot || 'unknown';
-                        attendance.timeSlot = {
-                            expected: {
-                                start: timeSlotInfo.startTime || null,
-                                end: timeSlotInfo.endTime || null
-                            }
-                        };
-
-                        if (timeSlotInfo.isWithinHours) {
+                        if (timeSlotInfo.isWithinHours && timeSlotInfo.slot) {
+                            attendance.session = timeSlotInfo.slot; // Valid enum value
+                            attendance.timeSlot = {
+                                expected: {
+                                    start: timeSlotInfo.startTime || null,
+                                    end: timeSlotInfo.endTime || null
+                                }
+                            };
                             const isLate = student.isAttendanceLate(center, attendance.date, lateThreshold);
                             attendance.status = isLate ? 'late' : 'present';
                         } else {
+                            // Outside operating hours
+                            attendance.session = 'full_day'; // Use valid enum value
                             attendance.status = 'late';
-                            attendance.session = 'outside_hours';
                         }
                     } else {
                         // Fallback to basic time check when no center info
@@ -616,7 +645,7 @@ async function processImageAttendance(student, processData) {
                     console.error('Error processing time slot for existing attendance:', timeSlotError);
                     // Fallback to basic logic
                     attendance.status = 'present';
-                    attendance.session = 'manual';
+                    attendance.session = 'full_day'; // Use valid enum value
                     attendance.verification.isVerified = true;
                     attendance.verification.verifiedAt = new Date();
                 }
@@ -629,7 +658,7 @@ async function processImageAttendance(student, processData) {
                 student: student._id,
                 date: new Date(timestamp),
                 status: 'pending_verification',
-                session: 'unknown',
+                session: 'full_day', // Use valid enum value
                 timeSlot: { expected: { start: null, end: null } },
                 whatsappMessage: {
                     messageId,
@@ -692,26 +721,27 @@ async function processImageAttendance(student, processData) {
                         const lateThreshold = settings.attendanceSettings.lateThreshold || 15;
 
                         const timeSlotInfo = student.getCurrentTimeSlot(center, new Date(timestamp));
-                        initialData.session = timeSlotInfo.slot || 'unknown';
-                        initialData.timeSlot = {
-                            expected: {
-                                start: timeSlotInfo.startTime || null,
-                                end: timeSlotInfo.endTime || null
-                            }
-                        };
 
-                        if (timeSlotInfo.isWithinHours) {
+                        if (timeSlotInfo.isWithinHours && timeSlotInfo.slot) {
+                            initialData.session = timeSlotInfo.slot; // Valid enum value
+                            initialData.timeSlot = {
+                                expected: {
+                                    start: timeSlotInfo.startTime || null,
+                                    end: timeSlotInfo.endTime || null
+                                }
+                            };
                             const isLate = student.isAttendanceLate(center, new Date(timestamp), lateThreshold);
                             initialData.status = isLate ? 'late' : 'present';
                         } else {
+                            // Outside operating hours
                             initialData.status = 'late';
-                            initialData.session = 'outside_hours';
+                            initialData.session = 'full_day'; // Use valid enum value
                         }
                     } catch (timeSlotError) {
                         console.error('Error processing time slot for new image attendance:', timeSlotError);
                         // Fallback to basic logic
                         initialData.status = 'present';
-                        initialData.session = 'manual';
+                        initialData.session = 'full_day'; // Use valid enum value
                     }
                 }
             } else {
